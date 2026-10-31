@@ -302,7 +302,8 @@ function viewSetup(){
 
 function viewLogin(){
   const c=cfg(); const locked=S.lockUntil>Date.now();
-  const demo=c.demo&&Array.isArray(c.demoAccessi)?c.demoAccessi.filter(d=>!S.staffLoaded||(S.staff[d.matricola]&&S.staff[d.matricola].attivo!==false)):null;
+  const staffList=Object.values(S.staff||{}).filter(s=>s.attivo!==false);
+  
   return `<main class="wrap">
     <div class="login-hero">
       <span class="brand-mark">${IC.box}</span>
@@ -314,7 +315,7 @@ function viewLogin(){
       <p class="err" id="l-err">${esc(locked?'Troppi tentativi errati. Riprova tra '+Math.ceil((S.lockUntil-Date.now())/1000)+' secondi.':S.loginErr)}</p>
       <button class="btn btn-primary btn-block btn-lg" ${locked?'disabled':''}>Accedi</button>
     </form>
-    ${demo&&demo.length?`<section class="panel"><div class="sec-h"><h2>Accessi di prova</h2><span class="pill info">Demo</span></div><p class="fine">Tocca un profilo per compilare matricola e PIN.</p><div class="creds">${demo.map(d=>`<button class="cred" data-act="fillDemo" data-m="${esc(d.matricola)}" data-p="${esc(d.pin)}"><div><b>${esc(d.nome)}</b><br><span>${esc(d.ruolo)}</span></div><span class="mono">${esc(d.matricola)} · PIN ${esc(d.pin)}</span></button>`).join('')}</div></section>`:''}
+    ${staffList.length?`<section class="panel"><div class="sec-h"><h2>Personale registrato (Accesso Rapido)</h2><span class="pill info">Demo</span></div><p class="fine">Tocca il tuo nome per precompilare la matricola.</p><div class="creds">${staffList.map(s=>`<button type="button" class="cred" data-act="fillUser" data-m="${esc(s.id)}"><div><b>${esc(s.nome)}</b><br><span>${s.ruolo==='coordinatore'?'Coordinatore':'Infermiere'}</span></div><span class="mono">Matricola: ${esc(s.id)}</span></button>`).join('')}</div></section>`:''}
     <p class="fine">Ogni apertura della keybox viene registrata con nome, data e ora. La sessione si chiude da sola dopo ${c.sessioneMin||5} minuti di inattività.</p>
   </main>`;
 }
@@ -492,10 +493,11 @@ function chartSVG(perDay){
   const fs=farmaci(); const W=Math.round(Math.max(300,Math.min(1060,Math.min(avail,1120)-2*Math.max(16,0)-34))),H=230,m={l:30,r:6,t:10,b:28}; const iw=W-m.l-m.r, ih=H-m.t-m.b;
   const max=Math.max(1,...perDay.map(d=>Math.max(...fs.map(f=>d.v[f.id]||0))));
   const yMax=niceMax(max); const step=yMax<=4?1:yMax<=10?2:5;
-  const band=iw/perDay.length; const gap=2; const bw=Math.max(3,Math.min(16,(band-6-gap*(fs.length-1))/fs.length));
+  const band=iw/perDay.length; const gap=perDay.length>60?0:2; 
+  const bw=Math.max(1.5,Math.min(16,(band-(gap*(fs.length-1)))/fs.length));
   let s=`<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Fiale prelevate al giorno">`;
   for(let v=0;v<=yMax;v+=step){ const y=m.t+ih-v/yMax*ih; s+=`<line class="${v===0?'bl':'gl'}" x1="${m.l}" x2="${W-m.r}" y1="${y}" y2="${y}"/><text x="${m.l-8}" y="${y+4}" text-anchor="end">${v}</text>`; }
-  const every=perDay.length<=7?1:perDay.length<=14?2:5;
+  const every=perDay.length<=7?1:perDay.length<=14?2:perDay.length<=30?5:perDay.length<=90?15:60;
   perDay.forEach((d,i)=>{
     const gx=m.l+i*band+(band-(bw*fs.length+gap*(fs.length-1)))/2;
     fs.forEach((f,j)=>{ const v=d.v[f.id]||0; const h=v/yMax*ih; s+=`<path class="b-${f.tema}" d="${barPath(gx+j*(bw+gap),m.t+ih-h,bw,h,4)}"/>`; });
@@ -512,7 +514,7 @@ function tabIndicatori(){
   const I=indicators(S.period); const tout=cfg().timeoutChiaveMin||15;
   const tras=I.prel?Math.round(I.tras/I.prel*100):null;
   const tPill=tras==null?'':tras>=98?'<span class="pill ok">In linea</span>':'<span class="pill warn">'+(I.prel-I.tras)+' da trascrivere</span>';
-  return `<div class="sec-h"><div><h2>Indicatori di processo ed esito</h2><p class="fine">Per l’audit clinico con l’équipe: misurano il sistema, non le persone.</p></div><div class="seg" role="group" aria-label="Periodo">${[7,14,30].map(p=>`<button data-act="setPeriod" data-p="${p}" aria-pressed="${S.period===p}">${p} giorni</button>`).join('')}</div></div>
+  return `<div class="sec-h"><div><h2>Indicatori di processo ed esito</h2><p class="fine">Per l’audit clinico con l’équipe: misurano il sistema, non le persone.</p></div><div class="seg" role="group" aria-label="Periodo">${[7,14,30,90,365].map(p=>`<button data-act="setPeriod" data-p="${p}" aria-pressed="${S.period===p}">${p===365?'1 anno':p+' giorni'}</button>`).join('')}</div></div>
     <div class="kpis">
       ${kpi('Trascrizione sul registro',tras==null?'—':tras+'<small>%</small>',I.tras+' prelievi su '+I.prel+' confermati',tPill)}
       ${kpi('Chiave fuori, tempo medio',I.rit?Math.round(I.avg)+'<small> min</small>':'—',I.over?(I.over===1?'1 volta':I.over+' volte')+' oltre '+tout+' min':'mai oltre '+tout+' min',I.over?'<span class="pill warn">Da approfondire</span>':'')}
@@ -743,7 +745,15 @@ const A={
   cancelFlow(){ S.view='home'; S.flow=null; render(); window.scrollTo(0,0); },
   setTab(d){ S.tab=d.t; S.codeFlow=null; S.coordForm=null; S.ackId=null; S.resetStep=0; S.delAsk=null; S.swipeOpen=null; render(); },
   logout(){ logout(); },
-  fillDemo(d){ $('#l-mat').value=d.m; $('#l-pin').value=d.p; $('#l-pin').focus(); },
+  fillUser(d){
+    const matInput = $('#l-mat');
+    const pinInput = $('#l-pin');
+    if(matInput) matInput.value = d.m;
+    if(pinInput) {
+      pinInput.value = '';
+      pinInput.focus();
+    }
+  },
   async takeKey(d){
     const k=S.key; const mine=!!(k&&k.status==='out'&&k.by===S.meId); const other=!!(k&&k.status==='out'&&!mine);
     if(other&&!d.force){ S.confirmTake=true; render(); return; }
@@ -1013,7 +1023,7 @@ async function boot(){
   Store.watchDoc('app/state',d=>{ S.base=d; changed(); });
   Store.watchDoc('app/key',d=>{ S.key=d; changed(); });
   Store.watchCol('staff',{},rows=>{ const m={}; rows.forEach(r=>m[r.id]=r); S.staff=m; S.staffLoaded=true; if(S.meId&&!m[S.meId]) S.meId=null; changed(); });
-  Store.watchCol('log',{orderBy:'day',dir:'desc',limit:62},docs=>{ const ev=[]; docs.forEach(d=>{ const it=d.items||{}; Object.keys(it).forEach(k=>ev.push(it[k])); }); ev.sort((a,b)=>b.ts-a.ts); S.events=ev; changed(); });
+  Store.watchCol('log',{orderBy:'day',dir:'desc',limit:365},docs=>{ const ev=[]; docs.forEach(d=>{ const it=d.items||{}; Object.keys(it).forEach(k=>ev.push(it[k])); }); ev.sort((a,b)=>b.ts-a.ts); S.events=ev; changed(); });
   render();
   setInterval(tick,1000);
 }
