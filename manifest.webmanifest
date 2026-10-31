@@ -1,0 +1,9 @@
+{
+  "name": "Keybox Stupefacenti",
+  "short_name": "Keybox",
+  "description": "Gestione accesso keybox e doppio controllo stupefacenti",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#ECF1F0",
+  "theme_color": "#0D6A62"
+}
