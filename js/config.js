@@ -1,4 +1,1 @@
-window.KEYBOX_CONFIG = {
-  supabaseUrl: "",
-  supabaseKey: ""
-};
+// Modalità locale attiva
