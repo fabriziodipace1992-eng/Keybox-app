@@ -120,8 +120,8 @@ const Store=(function(){
 })();
 
 const DEFAULT_FARMACI=[
-  {id:'morfina',nome:'Morfina',sale:'cloridrato',dosaggio:'10 mg / 1 ml',forma:'fiala',sigla:'M',tema:'m',soglia:5,attivo:true},
-  {id:'fentanyl',nome:'Fentanyl',sale:'citrato',dosaggio:'100 microgrammi / 2 ml',forma:'fiala',sigla:'F',tema:'f',soglia:5,attivo:true}
+  {id:'morfina',nome:'Morfina',sale:'cloridrato',dosaggio:'10 mg / 1 ml',forma:'fiala',sigla:'M',tema:'m',soglia:5,unitaPerScatola:5,attivo:true},
+  {id:'fentanyl',nome:'Fentanyl',sale:'citrato',dosaggio:'100 microgrammi / 2 ml',forma:'fiala',sigla:'F',tema:'f',soglia:5,unitaPerScatola:5,attivo:true}
 ];
 const S={
   loaded:false, loadError:false, staffLoaded:false, readOnly:false,
@@ -133,12 +133,13 @@ const S={
   codeFlow:null, coordForm:null, rettPrefill:null, ackId:null, swipeOpen:null, delAsk:null, token:null, codeValue:'', publicInfo:null, pinFor:null,
   qrUrl:null, revealCode:false, resetStep:0, scrollTo:null,
   showMyPinModal:false,
-  recoveryFlow:null
+  recoveryFlow:null,
+  assocLottoFarmacoId:null // Controlla il modal per associare il lotto a un farmaco esistente
 };
 const cfg=()=>S.config||{};
 const farmaciTutti=()=>(S.config&&S.config.farmaci)||DEFAULT_FARMACI;
 const farmaci=()=>farmaciTutti().filter(f=>f.attivo!==false);
-const fById=id=>farmaciTutti().find(f=>f.id===id)||{id,nome:id,sale:'',dosaggio:'',tema:'m',sigla:'?'};
+const fById=id=>farmaciTutti().find(f=>f.id===id)||{id,nome:id,sale:'',dosaggio:'',tema:'m',sigla:'?',unitaPerScatola:5};
 const me=()=>S.meUser||(S.meId?S.staff[S.meId]:null);
 const isCoord=()=>{const m=me();return !!m&&m.ruolo==='coordinatore';};
 
@@ -165,19 +166,22 @@ function parseScadenza(str){
 
 function getFefoPlan(farmacoId, qty){
   const lottiDisponibili = (S.lotti || [])
-    .filter(l => l.farmacoId === farmacoId && (l.fialeRimaste || 0) > 0)
-    .sort((a,b) => String(a.scadenza).localeCompare(String(b.scadenza)) || a.caricatoTs - b.caricatoTs);
+    .filter(l => (l.farmacoId === farmacoId || l.farmaco_id === farmacoId) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
+    .sort((a,b) => String(a.scadenza).localeCompare(String(b.scadenza)) || (a.caricatoTs || a.caricato_ts || 0) - (b.caricatoTs || b.caricato_ts || 0));
 
   let need = qty;
   const plan = [];
   for(const l of lottiDisponibili){
     if(need <= 0) break;
-    const take = Math.min(need, l.fialeRimaste);
+    const rimaste = l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste;
+    const unitaScatola = l.unitaPerScatola || l.unita_per_scatola || fById(farmacoId).unitaPerScatola || 5;
+    const take = Math.min(need, rimaste);
     plan.push({
       lotto: l.lotto,
       scadenza: l.scadenza,
       take: take,
-      fialeRimasteNelLotto: l.fialeRimaste - take
+      unitaPerScatola: unitaScatola,
+      fialeRimasteNelLotto: rimaste - take
     });
     need -= take;
   }
@@ -195,7 +199,7 @@ async function patchEvent(evt,patch){
   const items={}; items[evt.id]=patch;
   await Store.merge('log/'+(evt.day||dayKey(evt.ts)),{items});
 }
-const TYPE={chiave_presa:'Chiave presa',chiave_riposta:'Chiave riposta',chiave_passata:'Passaggio della chiave',prelievo:'Prelievo',carico:'Carico dalla farmacia',rettifica:'Rettifica giacenza',codice_cambiato:'Codice keybox cambiato',accesso_negato:'Accesso negato',personale_rimosso:'Personale eliminato',sicurezza_richiesta_otp:'Richiesta recupero PIN',sicurezza_pin_ripristinato:'PIN ripristinato con OTP'};
+const TYPE={chiave_presa:'Chiave presa',chiave_riposta:'Chiave riposta',chiave_passata:'Passaggio della chiave',prelievo:'Prelievo',carico:'Carico dalla farmacia',rettifica:'Rettifica giacenza',codice_cambiato:'Codice keybox cambiato',accesso_negato:'Accesso negato',personale_rimosso:'Personale eliminato',sicurezza_richiesta_otp:'Richiesta recupero PIN',sicurezza_pin_ripristinato:'PIN ripristinato con OTP',censimento_lotto:'Censimento lotto esistente'};
 const MOTIVO={somministrazione:'Somministrazione',rottura:'Fiala rotta o caduta',altro:'Altro'};
 function deltaText(delta,sign){
   return Object.keys(delta||{}).map(k=>{ const n=delta[k]; return fById(k).nome+' '+(sign?(n>0?'+':'')+n:fiale(Math.abs(n))); }).join(', ');
@@ -207,6 +211,7 @@ function detailText(e,short){
       return [short?'':deltaText(e.delta),e.paziente,MOTIVO[e.motivo]||'',e.note].filter(Boolean).join(' · ') + lottiInfo;
     case 'carico': return [deltaText(e.delta,true),e.riferimento].filter(Boolean).join(' · ');
     case 'rettifica': return farmaciTutti().filter(f=>e.da&&e.a&&e.da[f.id]!==e.a[f.id]).map(f=>f.nome+' '+e.da[f.id]+' → '+e.a[f.id]).join(', ')+(e.motivo?' · '+e.motivo:'');
+    case 'censimento_lotto': return (e.nota||'Associazione lotto/scadenza a giacenza esistente');
     case 'chiave_riposta': return (typeof e.durataMin==='number'?'Fuori per '+e.durataMin+' min':'')+(e.registrataDaAltri?' · presa da '+(e.presaDaNome||'?'):'');
     case 'chiave_passata': return 'Da '+(e.daNome||'?')+' a '+(e.byName||'?');
     case 'accesso_negato': return 'Matricola inserita: '+(e.matricola||'?');
@@ -282,16 +287,16 @@ function alerts(){
   const k=S.key;
   if(k&&k.status==='out'&&mins(k.since)>tout) out.push({sev:'crit',t:'Chiave fuori dalla keybox da '+mins(k.since)+' minuti',s:'Presa da '+(k.byName||'?')+' alle '+hhmm(k.since)+'. Limite impostato: '+tout+' min.',acts:[['Registra come riposta','markKeyIn']]});
   
-  // Alert Scadenze Farmaci entro 30 giorni o scaduti
-  (S.lotti || []).filter(l => (l.fialeRimaste || 0) > 0).forEach(l => {
+  (S.lotti || []).filter(l => ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0).forEach(l => {
     const expTs = parseScadenza(l.scadenza);
+    const rimaste = l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste;
     if(expTs){
       const diffDays = Math.ceil((expTs - now) / 86400000);
-      const f = fById(l.farmacoId);
+      const f = fById(l.farmacoId || l.farmaco_id);
       if(diffDays <= 0){
-        out.push({sev:'crit', t:`SCADUTO: ${f.nome} · Lotto ${l.lotto}`, s:`Scaduto da ${Math.abs(diffDays)} giorni. Rimanenza: ${fiale(l.fialeRimaste)}. Non somministrare e avviare reso farmacia.`, acts:[]});
+        out.push({sev:'crit', t:`SCADUTO: ${f.nome} · Lotto ${l.lotto}`, s:`Scaduto da ${Math.abs(diffDays)} giorni. Rimanenza: ${fiale(rimaste)}. Non somministrare e avviare reso farmacia.`, acts:[]});
       } else if(diffDays <= 30){
-        out.push({sev:'warn', t:`In scadenza: ${f.nome} · Lotto ${l.lotto}`, s:`Scade tra ${diffDays} giorni (${l.scadenza}). In cassaforte: ${fiale(l.fialeRimaste)}. Priorità prelievo FEFO attiva.`, acts:[]});
+        out.push({sev:'warn', t:`In scadenza: ${f.nome} · Lotto ${l.lotto}`, s:`Scade tra ${diffDays} giorni (${l.scadenza}). In cassaforte: ${fiale(rimaste)}. Priorità prelievo FEFO attiva.`, acts:[]});
       }
     }
   });
@@ -340,7 +345,7 @@ function render(passive){
     if(S.view==='prelievo'&&S.flow) body=viewPrelievo();
     else if(S.view==='coord'&&isCoord()) body=viewCoord();
     else body=viewHome();
-    html=viewTop()+`<main class="wrap${S.view==='coord'?' wide':''}">${body}</main>${S.showMyPinModal?viewMyPinModal():''}`;
+    html=viewTop()+`<main class="wrap${S.view==='coord'?' wide':''}">${body}</main>${S.showMyPinModal?viewMyPinModal():''}${S.assocLottoFarmacoId?viewAssocLottoModal():''}`;
   }
   app.innerHTML=html;
   if(keep) Object.keys(keep).forEach(id=>{ const el=document.getElementById(id); if(el) el.value=keep[id]; });
@@ -448,6 +453,57 @@ function viewMyPinModal(){
   </div></div>`;
 }
 
+function viewAssocLottoModal(){
+  const f = fById(S.assocLottoFarmacoId);
+  const st = stock();
+  const giacenzaAttuale = st[f.id] || 0;
+  
+  // Calcola quante fiale sono già associate a lotti per questo farmaco
+  const fialeGiaLottizzate = (S.lotti || [])
+    .filter(l => (l.farmacoId === f.id || l.farmaco_id === f.id) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
+    .reduce((acc, l) => acc + ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0), 0);
+  
+  const fialeDaLottizzare = Math.max(0, giacenzaAttuale - fialeGiaLottizzate);
+
+  return `<div class="modal-backdrop"><div class="panel modal-card" style="max-width:520px;">
+    <div class="sec-h">
+      <div>
+        <h2>Associa Lotto e Scadenza</h2>
+        <div class="sub">${esc(f.nome)} ${esc(f.dosaggio)}</div>
+      </div>
+      <button class="btn btn-quiet btn-sm" data-act="closeAssocLotto">✕</button>
+    </div>
+    
+    <p class="fine">
+      Consente di inserire retroattivamente il lotto e la scadenza per le fiale già presenti fisicamente in cassaforte, senza alterare la giacenza totale.
+    </p>
+
+    <div class="status info" style="margin-bottom:12px;">
+      <span class="ico">${IC.info}</span>
+      <div>Giacenza registrata: <b>${fiale(giacenzaAttuale)}</b> (di cui <b>${fiale(fialeGiaLottizzate)}</b> già coperte da lotti). Fiale residue da censire: <b>${fiale(fialeDaLottizzare)}</b>.</div>
+    </div>
+
+    <form data-submit="salvaAssocLotto" novalidate>
+      <div class="two">
+        <label class="field"><span>Numero di Lotto</span><input id="as-lot" type="text" maxlength="25" placeholder="Es. L12345" style="text-transform:uppercase;" required></label>
+        <label class="field"><span>Data di Scadenza</span><input id="as-exp" type="month" required></label>
+      </div>
+
+      <div class="two">
+        <label class="field"><span>Fiale di questo lotto</span><input id="as-fiale" type="number" inputmode="numeric" min="1" max="${giacenzaAttuale || 999}" value="${fialeDaLottizzare || 1}"></label>
+        <label class="field"><span>Formato scatola (fiale per scatola)</span><input id="as-unita" type="number" inputmode="numeric" min="1" max="100" value="${f.unitaPerScatola || 5}"></label>
+      </div>
+
+      <p class="err" id="as-err"></p>
+      
+      <div class="btns" style="margin-top:16px;">
+        <button class="btn btn-primary btn-block">Salva e Associa al FEFO</button>
+        <button type="button" class="btn btn-quiet btn-block" data-act="closeAssocLotto">Annulla</button>
+      </div>
+    </form>
+  </div></div>`;
+}
+
 function viewSetup(){
   return `<main class="wrap"><div class="block">
     <div class="eyebrow">Prima configurazione</div>
@@ -465,7 +521,7 @@ function viewSetup(){
       <div class="eyebrow">Keybox</div>
       <label class="field"><span>Codice attuale della keybox</span><input id="su-code" type="text" inputmode="numeric" maxlength="5" placeholder="5 cifre"></label>
       <div class="eyebrow">Fiale presenti in cassetta</div>
-      <div class="two">${DEFAULT_FARMACI.map(f=>`<label class="field"><span>${esc(f.nome)} ${esc(f.dosaggio)}</span><input id="su-g-${f.id}" type="number" inputmode="numeric" min="0" max="999" value="0"></label>`).join('')}</div>
+      <div class="two">${DEFAULT_FARMACI.map(f=>`<label class="field"><span>${esc(f.nome)} ${esc(f.dosaggio)} (scatole da ${f.unitaPerScatola||5} fiale)</span><input id="su-g-${f.id}" type="number" inputmode="numeric" min="0" max="999" value="0"></label>`).join('')}</div>
       <p class="err" id="su-err"></p>
       <button class="btn btn-primary btn-block btn-lg">Crea il reparto</button>
     </form>
@@ -532,15 +588,19 @@ function codePanel(){
 
 function drugRow(f,n){
   const low=n<=(f.soglia||0);
-  const lottiFarmaco = (S.lotti || []).filter(l => l.farmacoId === f.id && l.fialeRimaste > 0).sort((a,b)=>String(a.scadenza).localeCompare(String(b.scadenza)));
+  const lottiFarmaco = (S.lotti || [])
+    .filter(l => (l.farmacoId === f.id || l.farmaco_id === f.id) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
+    .sort((a,b)=>String(a.scadenza).localeCompare(String(b.scadenza)));
   const nextLotto = lottiFarmaco[0];
+  const unitaScatola = (nextLotto && (nextLotto.unitaPerScatola || nextLotto.unita_per_scatola)) || f.unitaPerScatola || 5;
+  const rimasteNext = nextLotto ? (nextLotto.fialeRimaste != null ? nextLotto.fialeRimaste : nextLotto.fiale_rimaste) : 0;
   
   return `<div class="drug d-${f.tema}">
     <span class="badge"><b>${esc(f.sigla)}</b></span>
     <div class="drug-main">
       <div class="drug-name">${esc(f.nome.toUpperCase())} <span class="salt">${esc(f.sale||'')}</span></div>
-      <div class="drug-dose">${esc(f.dosaggio)} · ${esc(f.forma||'fiala')}</div>
-      ${nextLotto ? `<div class="row-meta" style="margin-top:4px;"><span class="pill info">Prossimo lotto: <b>${esc(nextLotto.lotto)}</b> (Scad. ${esc(nextLotto.scadenza)})</span></div>` : ''}
+      <div class="drug-dose">${esc(f.dosaggio)} · ${esc(f.forma||'fiala')} · scatole da ${f.unitaPerScatola||5}</div>
+      ${nextLotto ? `<div class="row-meta" style="margin-top:4px;"><span class="pill info">Prossimo FEFO: <b>${esc(nextLotto.lotto)}</b> (Scad. ${esc(nextLotto.scadenza)}) · ${rimasteNext} di ${unitaScatola} rimaste</span></div>` : (n>0 ? `<div class="row-meta" style="margin-top:4px;"><span class="pill warn">Nessun lotto associato</span></div>` : '')}
       ${low ? '<div class="row-meta"><span class="pill warn">Sotto soglia ('+f.soglia+')</span></div>' : ''}
     </div>
     <div class="qty">${n}<small>${n===1?'fiala':'fiale'}</small></div>
@@ -549,7 +609,7 @@ function drugRow(f,n){
 
 function viewHome(){
   const k=S.key; const mine=!!(k&&k.status==='out'&&k.by===S.meId); const st=stock();
-  const recent=S.events.filter(e=>['prelievo','carico','rettifica'].includes(e.type)).slice(0,5);
+  const recent=S.events.filter(e=>['prelievo','carico','rettifica','censimento_lotto'].includes(e.type)).slice(0,5);
   return `${keyStatusHTML(false)}
     ${codePanel()}
     ${mine?`<div class="block"><button class="btn btn-primary btn-lg btn-block" data-act="startPrelievo">Registra un prelievo</button><button class="btn btn-secondary btn-block" data-act="returnKey">Ho rimesso la chiave nella keybox</button></div>`:`<p class="hint">Per registrare un prelievo, prima mostra il codice e prendi la chiave.</p>`}
@@ -573,7 +633,7 @@ function viewPrelievo(){
             <span class="badge"><b>${esc(f.sigla)}</b></span>
             <div class="grow">
               <div class="drug-name">${esc(f.nome.toUpperCase())} <span class="salt">${esc(f.sale||'')}</span></div>
-              <div class="drug-dose">${esc(f.dosaggio)} · in cassetta ${fiale(have)}</div>
+              <div class="drug-dose">${esc(f.dosaggio)} · in cassetta ${fiale(have)} (formato da ${f.unitaPerScatola||5})</div>
             </div>
           </div>
           <div class="stepper">
@@ -606,10 +666,10 @@ function viewPrelievo(){
             <div style="font-weight:700;font-size:13px;margin-bottom:4px;color:var(--c-primary,#0D6A62);">📦 Istruzioni di prelievo scatola (FEFO):</div>
             ${plan.length ? plan.map(p => `
               <div style="font-size:14px;display:flex;justify-content:space-between;align-items:center;margin-block:4px;">
-                <span>Preleva <b>${fiale(p.take)}</b> da Lotto <b class="mono">${esc(p.lotto)}</b> (Scad. ${esc(p.scadenza)})</span>
+                <span>Preleva <b>${fiale(p.take)}</b> da Lotto <b class="mono">${esc(p.lotto)}</b> (Scad. ${esc(p.scadenza)}) · Scatola da ${p.unitaPerScatola}</span>
                 <span class="pill ${p.fialeRimasteNelLotto===0?'warn':'ok'}">${p.fialeRimasteNelLotto===0?'Scatola esaurita':'Restano '+p.fialeRimasteNelLotto+' fiale'}</span>
               </div>
-            `).join('') : '<div class="muted">Nessun lotto specifico registrato per questo farmaco.</div>'}
+            `).join('') : '<div class="muted">Nessun lotto specifico registrato per questo farmaco (verrà scalata la giacenza generica).</div>'}
           </div>
 
           <div class="verify-qty"><div><span>Prelevi</span><b>${fiale(q)}</b></div><div><span>Restano in cassetta</span><b>${fiale((st[f.id]||0)-q)}</b></div></div>
@@ -629,7 +689,7 @@ function viewPrelievo(){
       <p class="lead">Trascrivi subito questi dati sul registro vidimato cartaceo del reparto.</p>
       ${sel.map(id=>{ 
         const f=fById(id);
-        const lotti = (e.lottiScalati||[]).filter(x=>x.farmacoId===id);
+        const lotti = (e.lottiScalati||[]).filter(x=>x.farmacoId===id || x.farmaco_id===id);
         const lottiStr = lotti.length ? lotti.map(x=>x.lotto).join(', ') : '—';
         return `<div class="twin-rec d-${f.tema}">
           <div class="twin-h"><span class="badge"><b>${esc(f.sigla)}</b></span><b>${esc(f.nome)} ${esc(f.sale||'')}</b><span class="muted">${esc(f.dosaggio)}</span></div>
@@ -675,16 +735,20 @@ function viewCoord(){
 function formCarico(){
   return `<form class="subform" data-submit="carico" novalidate>
     <h3>Carico dalla farmacia per scatole/lotti</h3>
-    <p class="fine">Registra le scatole arrivate (1 scatola = 5 fiale). Il sistema gestirà le scadenze e i prelievi con priorità FEFO.</p>
+    <p class="fine">Specifica il numero di scatole, quante fiale contiene ogni scatola, il lotto e la scadenza. Il sistema gestirà lo scarico con logica FEFO.</p>
     
     ${farmaci().map(f=>`
       <div class="subform" style="border-left:4px solid var(--c-primary,#0D6A62);margin-bottom:12px;padding:10px;">
         <div style="font-weight:700;margin-bottom:6px;">${esc(f.nome)} ${esc(f.dosaggio)}</div>
         <div class="two">
-          <label class="field"><span>Numero di scatole (da 5 fiale)</span><input id="ca-scat-${f.id}" type="number" inputmode="numeric" min="0" max="99" value="0"></label>
-          <label class="field"><span>Numero di Lotto</span><input id="ca-lot-${f.id}" type="text" maxlength="25" placeholder="Es. B10492" style="text-transform:uppercase;"></label>
+          <label class="field"><span>Numero di scatole</span><input id="ca-scat-${f.id}" type="number" inputmode="numeric" min="0" max="99" value="0" data-calc-carico="${f.id}"></label>
+          <label class="field"><span>Fiale per scatola</span><input id="ca-unita-${f.id}" type="number" inputmode="numeric" min="1" max="100" value="${f.unitaPerScatola||5}" data-calc-carico="${f.id}"></label>
         </div>
-        <label class="field"><span>Data di scadenza (Mese / Anno)</span><input id="ca-exp-${f.id}" type="month"></label>
+        <div class="two">
+          <label class="field"><span>Numero di Lotto</span><input id="ca-lot-${f.id}" type="text" maxlength="25" placeholder="Es. B10492" style="text-transform:uppercase;"></label>
+          <label class="field"><span>Data di scadenza (Mese / Anno)</span><input id="ca-exp-${f.id}" type="month"></label>
+        </div>
+        <div id="ca-tot-preview-${f.id}" class="row-s" style="font-weight:600;color:var(--c-primary,#0D6A62);">0 fiale totali da caricare</div>
       </div>
     `).join('')}
     
@@ -712,7 +776,9 @@ function tabStato(){
   const today=dayKey(Date.now()); const tEv=S.events.filter(e=>dayKey(e.ts)===today);
   const tPrel={}; farmaci().forEach(f=>tPrel[f.id]=0); tEv.filter(e=>e.type==='prelievo').forEach(e=>Object.keys(e.delta||{}).forEach(k=>tPrel[k]-=e.delta[k]));
   
-  const lottiAttivi = (S.lotti || []).filter(l => l.fialeRimaste > 0).sort((a,b)=>String(a.scadenza).localeCompare(String(b.scadenza)));
+  const lottiAttivi = (S.lotti || [])
+    .filter(l => ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
+    .sort((a,b)=>String(a.scadenza).localeCompare(String(b.scadenza)));
 
   return `<div class="grid2">
     <div class="block">
@@ -723,21 +789,36 @@ function tabStato(){
       </section>
 
       <section class="panel">
-        <div class="sec-h"><h2>Scatole e Lotti in cassaforte (FEFO)</h2><span class="pill info">${lottiAttivi.length} attive</span></div>
-        <p class="fine">Elenco ordinato per priorità di scadenza. Il sistema scala automaticamente la scatola più vicina alla scadenza.</p>
+        <div class="sec-h">
+          <h2>Scatole e Lotti in cassaforte (FEFO)</h2>
+          <span class="pill info">${lottiAttivi.length} attivi</span>
+        </div>
+        <p class="fine">Elenco ordinato per priorità di scadenza. Il prelievo scala automaticamente la confezione con scadenza più vicina.</p>
+        
+        <div style="margin-bottom:12px;">
+          <div style="font-weight:600;font-size:13px;margin-bottom:6px;">Associa lotto/scadenza a farmaco già presente in cassaforte:</div>
+          <div class="btns" style="flex-wrap:wrap;gap:6px;">
+            ${farmaci().map(f=>`<button class="btn btn-secondary btn-sm" data-act="openAssocLotto" data-id="${esc(f.id)}">+ Lotto per ${esc(f.nome)}</button>`).join('')}
+          </div>
+        </div>
+
         ${lottiAttivi.length ? `<div class="tbl"><table>
-          <thead><tr><th>Farmaco</th><th>Lotto</th><th>Scadenza</th><th class="num">Fiale rimaste</th></tr></thead>
+          <thead><tr><th>Farmaco</th><th>Lotto</th><th>Scadenza</th><th>Formato</th><th class="num">Fiale rimaste</th></tr></thead>
           <tbody>
             ${lottiAttivi.map(l=>{
-              const f = fById(l.farmacoId);
+              const f = fById(l.farmacoId || l.farmaco_id);
               const expTs = parseScadenza(l.scadenza);
               const days = expTs ? Math.ceil((expTs - Date.now())/86400000) : null;
               const pill = days && days <= 30 ? '<span class="pill warn" style="margin-left:4px;">In scadenza</span>' : '';
+              const rimaste = l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste;
+              const totali = l.fialeTotali != null ? l.fialeTotali : l.fiale_totali;
+              const unitaScatola = l.unitaPerScatola || l.unita_per_scatola || f.unitaPerScatola || 5;
               return `<tr>
                 <td><b>${esc(f.nome)}</b></td>
                 <td><span class="mono">${esc(l.lotto)}</span></td>
                 <td>${esc(l.scadenza)}${pill}</td>
-                <td class="num"><b>${l.fialeRimaste}</b> <small>/ ${l.fialeTotali}</small></td>
+                <td><small>Scatola da ${unitaScatola}</small></td>
+                <td class="num"><b>${rimaste}</b> <small>/ ${totali}</small></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -763,7 +844,7 @@ function tabSegnalazioni(){
   }).join('')}</div>`;
 }
 
-const FILTERS=[['tutti','Tutti',()=>true],['chiave','Chiave',e=>/^chiave/.test(e.type)],['prelievo','Prelievi',e=>e.type==='prelievo'],['datrascrivere','Da trascrivere',e=>e.type==='prelievo'&&!e.trascritto],['giacenze','Carichi e rettifiche',e=>e.type==='carico'||e.type==='rettifica'],['sicurezza','Codice, accessi e personale',e=>e.type==='codice_cambiato'||e.type==='accesso_negato'||e.type==='personale_rimosso'||/^sicurezza/.test(e.type)]];
+const FILTERS=[['tutti','Tutti',()=>true],['chiave','Chiave',e=>/^chiave/.test(e.type)],['prelievo','Prelievi',e=>e.type==='prelievo'],['datrascrivere','Da trascrivere',e=>e.type==='prelievo'&&!e.trascritto],['giacenze','Carichi e rettifiche',e=>e.type==='carico'||e.type==='rettifica'||e.type==='censimento_lotto'],['sicurezza','Codice, accessi e personale',e=>e.type==='codice_cambiato'||e.type==='accesso_negato'||e.type==='personale_rimosso'||/^sicurezza/.test(e.type)]];
 
 function tabRegistro(){
   const flt=(FILTERS.find(f=>f[0]===S.filter)||FILTERS[0])[2];
@@ -847,7 +928,7 @@ function tabImpostazioni(){
     
     <section class="panel">
       <div class="sec-h"><h2>Farmaci in cassaforte</h2><span class="muted" style="font-size:14px">${farmaci().length} attivi</span></div>
-      <p class="fine">Modifica nome, dosaggio e soglia di riordino. Se un farmaco non è più in uso, toccando "Archivia" non comparirà più nei prelievi ma resterà nello storico.</p>
+      <p class="fine">Modifica nome, dosaggio, formato confezione standard e soglia di riordino. Se un farmaco non è più in uso, toccando "Archivia" non comparirà più nei prelievi ma resterà nello storico.</p>
       <form class="block" data-submit="farmaciSave" novalidate>
         ${farmaciTutti().map(f=>`
           <div class="subform" style="border-left:4px solid var(--c-primary,#0D6A62);margin-bottom:12px;padding:12px;">
@@ -864,6 +945,9 @@ function tabImpostazioni(){
             </div>
             <div class="two" style="width:100%;">
               <label class="field"><span>Dosaggio / Volume</span><input id="fa-dos-${f.id}" type="text" maxlength="40" value="${esc(f.dosaggio)}"></label>
+              <label class="field"><span>Formato scatola standard (fiale)</span><input id="fa-unita-${f.id}" type="number" min="1" max="100" value="${f.unitaPerScatola||5}"></label>
+            </div>
+            <div class="two" style="width:100%;">
               <label class="field"><span>Soglia riordino (fiale)</span><input id="fa-sog-${f.id}" type="number" min="0" max="999" value="${f.soglia||0}"></label>
             </div>
           </div>
@@ -882,7 +966,10 @@ function tabImpostazioni(){
           <label class="field"><span>Sigla badge (1 o 2 lettere)</span><input id="nf-sigla" type="text" maxlength="2" placeholder="Es. O" style="text-transform:uppercase;"></label>
         </div>
         <div class="two">
+          <label class="field"><span>Formato scatola standard (fiale)</span><input id="nf-unita" type="number" min="1" max="100" value="5"></label>
           <label class="field"><span>Soglia riordino (fiale)</span><input id="nf-sog" type="number" min="0" max="999" value="5"></label>
+        </div>
+        <div class="two">
           <label class="field"><span>Giacenza iniziale in cassaforte</span><input id="nf-init" type="number" min="0" max="999" value="0"></label>
         </div>
         <p class="err" id="nf-err"></p>
@@ -920,7 +1007,7 @@ async function run(fn){ try{ await fn(); }catch(e){ if(e&&e.session){ logout('Se
 function saveSession(){ try{ if(REMOTE_ON?S.token:S.meId) sessionStorage.setItem(SS_KEY,JSON.stringify(REMOTE_ON?{token:S.token,last:S.lastActivity}:{id:S.meId,last:S.lastActivity})); else sessionStorage.removeItem(SS_KEY); }catch(e){} }
 function logout(msg){
   Api.logout().catch(()=>{}); S.codeValue='';
-  S.meId=null; S.meUser=null; S.view='home'; S.tab='stato'; S.filter='tutti'; S.flow=null; S.codeShownUntil=0; S.confirmTake=false; S.codeFlow=null; S.coordForm=null; S.ackId=null; S.revealCode=false; S.resetStep=0; S.pinFor=null; S.showMyPinModal=false; S.recoveryFlow=null;
+  S.meId=null; S.meUser=null; S.view='home'; S.tab='stato'; S.filter='tutti'; S.flow=null; S.codeShownUntil=0; S.confirmTake=false; S.codeFlow=null; S.coordForm=null; S.ackId=null; S.revealCode=false; S.resetStep=0; S.pinFor=null; S.showMyPinModal=false; S.recoveryFlow=null; S.assocLottoFarmacoId=null;
   saveSession(); render(); if(msg) toast(msg);
 }
 function isWeak(code){
@@ -1004,12 +1091,41 @@ const LocalApi={
     return evt;
   },
   async transcribed(e){ const ts=Date.now(); await patchEvent(e,{trascritto:true,trascrittoTs:ts}); return Object.assign({},e,{trascritto:true,trascrittoTs:ts}); },
-  async carico(delta,rif){
+  async carico(delta,rif,lotti){
     const after=stock(); Object.keys(delta).forEach(k=>after[k]=(after[k]||0)+delta[k]);
     const evt=await addEvent('carico',{delta,riferimento:rif});
     await Store.set('app/state',{giacenza:after,ts:evt.ts,fonte:'carico'});
+    if(lotti && lotti.length){
+      lotti.forEach(l=>{
+        S.lotti.push({
+          id: uid(),
+          farmacoId: l.farmacoId,
+          lotto: l.lotto,
+          scadenza: l.scadenza,
+          fialeTotali: l.fiale,
+          fialeRimaste: l.fiale,
+          unitaPerScatola: l.unitaPerScatola || 5,
+          caricatoTs: Date.now()
+        });
+      });
+    }
   },
   async rettifica(a,motivo){ const evt=await addEvent('rettifica',{da:stock(),a,motivo}); await Store.set('app/state',{giacenza:a,ts:evt.ts,fonte:'rettifica'}); },
+  async associaLottoEsistente(farmacoId, lotto, scadenza, fiale, unitaPerScatola){
+    S.lotti.push({
+      id: uid(),
+      farmacoId: farmacoId,
+      lotto: lotto,
+      scadenza: scadenza,
+      fialeTotali: fiale,
+      fialeRimaste: fiale,
+      unitaPerScatola: unitaPerScatola || 5,
+      caricatoTs: Date.now()
+    });
+    await addEvent('censimento_lotto',{
+      nota: `Associazione lotto ${lotto} (${scadenza}, ${fiale} fiale, scatole da ${unitaPerScatola}) a ${fById(farmacoId).nome}`
+    });
+  },
   ack(e,note){ return patchEvent(e,{gestito:{by:S.meId,byName:me().nome,ts:Date.now(),note}}); },
   async codeSet(code){ await Store.merge('app/config',{codice:code,codiceDal:Date.now(),codiceDa:S.meId,codiceDaNome:me().nome}); await addEvent('codice_cambiato',{}); },
   rules(o){ return Store.merge('app/config',o); },
@@ -1087,6 +1203,31 @@ const RemoteApi={
   async transcribed(e){ await RemoteApi.act('transcribed',{id:e.id}); return S.events.find(x=>x.id===e.id)||Object.assign({},e,{trascritto:true,trascrittoTs:Date.now()}); },
   carico(delta,rif,lotti){ return RemoteApi.act('carico',{delta,riferimento:rif,lotti}); },
   rettifica(a,motivo){ return RemoteApi.act('rettifica',{a,motivo}); },
+  async associaLottoEsistente(farmacoId, lotto, scadenza, fiale, unitaPerScatola){
+    // Utilizza la RPC dedicata o kb_do
+    try {
+      const res = await rpc('kb_associa_lotto_esistente', {
+        p_farmaco_id: farmacoId,
+        p_lotto: lotto,
+        p_scadenza: scadenza,
+        p_fiale_rimaste: fiale,
+        p_unita_per_scatola: unitaPerScatola || 5,
+        p_operatore_matr: S.meId,
+        p_operatore_nome: me()?.nome || ''
+      });
+      if(res && res.error) throw new UserError(res.error);
+    } catch(err) {
+      // Fallback a kb_do se l'RPC diretta non è esposta pubblicamente
+      await RemoteApi.act('associa_lotto_esistente', {
+        farmaco_id: farmacoId,
+        lotto: lotto,
+        scadenza: scadenza,
+        fiale_rimaste: fiale,
+        unita_per_scatola: unitaPerScatola || 5
+      });
+    }
+    await RemoteApi.refresh(true);
+  },
   ack(e,note){ return RemoteApi.act('ack',{id:e.id,note}); },
   codeSet(code){ return RemoteApi.act('code_set',{codice:code}); },
   rules(o){ return RemoteApi.act('rules',o); },
@@ -1108,6 +1249,8 @@ const A={
   logout(){ logout(); },
   openMyPin(){ S.showMyPinModal=true; render(); },
   closeMyPin(){ S.showMyPinModal=false; render(); },
+  openAssocLotto(d){ S.assocLottoFarmacoId = d.id; render(); },
+  closeAssocLotto(){ S.assocLottoFarmacoId = null; render(); },
   startRecovery(){ S.recoveryFlow={step:1,mat:val('l-mat'),emailMasked:'',err:''}; render(); },
   cancelRecovery(){ S.recoveryFlow=null; render(); },
   fillUser(d){
@@ -1321,6 +1464,27 @@ const SUBMIT={
     render();
     toast('PIN aggiornato.');
   },
+  async salvaAssocLotto(){
+    const fId = S.assocLottoFarmacoId;
+    const lotto = val('as-lot').toUpperCase();
+    const exp = val('as-exp');
+    const fialeNum = Number(val('as-fiale')) || 0;
+    const unita = Number(val('as-unita')) || 5;
+    const err = $('#as-err');
+
+    if(!lotto){ err.textContent = 'Inserisci il codice del lotto.'; return; }
+    if(!exp){ err.textContent = 'Seleziona il mese e anno di scadenza.'; return; }
+    if(fialeNum <= 0){ err.textContent = 'Indica un numero di fiale valido maggiore di 0.'; return; }
+
+    try {
+      await Api.associaLottoEsistente(fId, lotto, exp, fialeNum, unita);
+      S.assocLottoFarmacoId = null;
+      render();
+      toast(`Lotto ${lotto} associato con successo (${fiale(fialeNum)}).`);
+    } catch(e) {
+      err.textContent = errMsg(e);
+    }
+  },
   async setup(){
     const rep=val('su-rep'), nome=val('su-nome'), email=val('su-email'), mat=val('su-mat'), pin=val('su-pin'), code=val('su-code'); const err=$('#su-err');
     const g={}; let gBad=false; DEFAULT_FARMACI.forEach(f=>{ const v=val('su-g-'+f.id); if(!/^\d{1,3}$/.test(v)) gBad=true; g[f.id]=Number(v); });
@@ -1343,6 +1507,7 @@ const SUBMIT={
     farmaci().forEach(f=>{
       const scatVal = val('ca-scat-'+f.id);
       const scat = Number(scatVal) || 0;
+      const unita = Number(val('ca-unita-'+f.id)) || (f.unitaPerScatola || 5);
       const lot = val('ca-lot-'+f.id);
       const exp = val('ca-exp-'+f.id);
 
@@ -1352,11 +1517,12 @@ const SUBMIT={
           $('#ca-err').textContent = `Inserisci sia il Lotto che la Scadenza per le scatole di ${f.nome}.`;
           return;
         }
-        const totFiale = scat * 5;
+        const totFiale = scat * unita;
         delta[f.id] = (delta[f.id] || 0) + totFiale;
         lotti.push({
           farmacoId: f.id,
           scatole: scat,
+          unitaPerScatola: unita,
           fiale: totFiale,
           lotto: lot.toUpperCase(),
           scadenza: exp
@@ -1394,11 +1560,13 @@ const SUBMIT={
       const nomeInput = val('fa-nome-'+f.id);
       const saleInput = val('fa-sale-'+f.id);
       const dosInput  = val('fa-dos-'+f.id);
+      const unitaInput= val('fa-unita-'+f.id);
       const sogInput  = val('fa-sog-'+f.id);
       return Object.assign({}, f, {
         nome: nomeInput || f.nome,
         sale: saleInput != null ? saleInput : f.sale,
         dosaggio: dosInput || f.dosaggio,
+        unitaPerScatola: Math.max(1, Number(unitaInput) || 5),
         soglia: Math.max(0, Number(sogInput) || 0)
       });
     });
@@ -1407,7 +1575,7 @@ const SUBMIT={
     toast('Farmaci salvati con successo.');
   },
   async farmacoAdd(){
-    const nome=val('nf-nome'), sale=val('nf-sale'), dos=val('nf-dos'), sigla=val('nf-sigla'), sog=Number(val('nf-sog'))||0, init=Number(val('nf-init'))||0;
+    const nome=val('nf-nome'), sale=val('nf-sale'), dos=val('nf-dos'), sigla=val('nf-sigla'), unita=Number(val('nf-unita'))||5, sog=Number(val('nf-sog'))||0, init=Number(val('nf-init'))||0;
     const err=$('#nf-err');
     if(!nome){ err.textContent='Inserisci il nome del farmaco.'; return; }
     if(!dos){ err.textContent='Inserisci il dosaggio.'; return; }
@@ -1422,6 +1590,7 @@ const SUBMIT={
       forma: 'fiala',
       sigla: sigla.toUpperCase(),
       tema: 'm',
+      unitaPerScatola: unita,
       soglia: sog,
       attivo: true,
       giacenzaIniziale: init
@@ -1468,8 +1637,19 @@ document.addEventListener('submit',e=>{
   const f=e.target; e.preventDefault(); const fn=SUBMIT[f.dataset.submit]; if(fn) run(()=>fn(f));
 });
 document.addEventListener('input',e=>{
-  const el=e.target; const b=el.dataset&&el.dataset.bind;
+  const el=e.target; 
+  const b=el.dataset&&el.dataset.bind;
   if(b){ const k=b.split('.'); let t=S; for(let i=0;i<k.length-1;i++){ if(t[k[i]]==null) t[k[i]]={}; t=t[k[i]]; } t[k[k.length-1]]=el.value; }
+  
+  // Calcolo dinamico anteprima fiale totali nel carico
+  if(el.dataset && el.dataset.calcCarico){
+    const fid = el.dataset.calcCarico;
+    const scat = parseInt(val('ca-scat-'+fid), 10) || 0;
+    const unita = parseInt(val('ca-unita-'+fid), 10) || 1;
+    const tot = scat * unita;
+    const prev = document.getElementById('ca-tot-preview-'+fid);
+    if(prev) prev.textContent = `${tot} fiale totali da caricare (${scat} scatole × ${unita})`;
+  }
 });
 document.addEventListener('change',e=>{
   const el=e.target; if(el.dataset&&el.dataset.verify&&S.flow){
@@ -1562,4 +1742,3 @@ async function boot(){
 }
 boot();
 })();
-
