@@ -135,7 +135,8 @@ const S={
   showMyPinModal:false,
   recoveryFlow:null,
   assocLottoFarmacoId:null,
-  snoozedLotti:{}
+  snoozedLotti:{},
+  dismissedNegatiTs:0
 };
 const cfg=()=>S.config||{};
 const farmaciTutti=()=>(S.config&&S.config.farmaci)||DEFAULT_FARMACI;
@@ -223,7 +224,7 @@ async function patchEvent(evt,patch){
   const items={}; items[evt.id]=patch;
   await Store.merge('log/'+(evt.day||dayKey(evt.ts)),{items});
 }
-const TYPE={chiave_presa:'Chiave presa',chiave_riposta:'Chiave riposta',chiave_passata:'Passaggio della chiave',prelievo:'Prelievo',carico:'Carico dalla farmacia',rettifica:'Rettifica giacenza',codice_cambiato:'Codice keybox cambiato',accesso_negato:'Accesso negato',personale_rimosso:'Personale eliminato',sicurezza_richiesta_otp:'Richiesta recupero PIN',sicurezza_pin_ripristinato:'PIN ripristinato con OTP',censimento_lotto:'Censimento lotto iniziale',gestione_scadenza:'Presa visione/posticipo scadenza'};
+const TYPE={chiave_presa:'Chiave presa',chiave_riposta:'Chiave riposta',chiave_passata:'Passaggio della chiave',prelievo:'Prelievo',carico:'Carico dalla farmacia',rettifica:'Rettifica giacenza',codice_cambiato:'Codice keybox cambiato',accesso_negato:'Accesso negato',personale_rimosso:'Personale eliminato',sicurezza_richiesta_otp:'Richiesta recupero PIN',sicurezza_pin_ripristinato:'PIN ripristinato con OTP',censimento_lotto:'Censimento lotto iniziale',gestione_scadenza:'Presa visione/posticipo scadenza',gestione_accessi_negati:'Presa visione accessi negati'};
 const MOTIVO={somministrazione:'Somministrazione',rottura:'Fiala rotta o caduta',altro:'Altro'};
 function deltaText(delta,sign){
   return Object.keys(delta||{}).map(k=>{ const n=delta[k]; return fById(k).nome+' '+(sign?(n>0?'+':'')+n:fiale(Math.abs(n))); }).join(', ');
@@ -237,6 +238,7 @@ function detailText(e,short){
     case 'rettifica': return farmaciTutti().filter(f=>e.da&&e.a&&e.da[f.id]!==e.a[f.id]).map(f=>f.nome+' '+e.da[f.id]+' → '+e.a[f.id]).join(', ')+(e.motivo?' · '+e.motivo:'');
     case 'censimento_lotto': return (e.nota||'');
     case 'gestione_scadenza': return (e.nota||'');
+    case 'gestione_accessi_negati': return (e.nota||'');
     case 'chiave_riposta': return (typeof e.durataMin==='number'?'Fuori per '+e.durataMin+' min':'')+(e.registrataDaAltri?' · presa da '+(e.presaDaNome||'?'):'');
     case 'chiave_passata': return 'Da '+(e.daNome||'?')+' a '+(e.byName||'?');
     case 'accesso_negato': return 'Matricola inserita: '+(e.matricola||'?');
@@ -269,7 +271,7 @@ function rowHTML(e){
     }
   }
   if(e.type==='chiave_riposta'&&typeof e.durataMin==='number'&&e.durataMin>(cfg().timeoutChiaveMin||15)) meta.push('<span class="pill warn">Oltre il limite</span>');
-  if(e.type==='accesso_negato'||/^sicurezza/.test(e.type)) meta.push('<span class="pill warn">Sicurezza</span>');
+  if(e.type==='accesso_negato'||/^sicurezza/.test(e.type)||e.type==='gestione_accessi_negati') meta.push('<span class="pill warn">Sicurezza</span>');
   if(e.gestito) meta.push(`<span class="pill">Presa visione: ${esc(first(e.gestito.byName))} ${hhmm(e.gestito.ts)}</span>`);
 
   const operatore = resolveOperator(e);
@@ -368,7 +370,16 @@ function alerts(){
   });
 
   const neg=S.events.filter(e=>e.type==='accesso_negato'&&now-e.ts<86400000);
-  if(neg.length>=3) out.push({sev:'warn',t:neg.length+' accessi negati nelle ultime 24 ore',s:'Matricole inserite: '+[...new Set(neg.map(e=>e.matricola))].join(', '),acts:[]});
+  const maxNegTs = neg.reduce((m, e)=>Math.max(m, e.ts||0), 0);
+  if(neg.length>=3 && maxNegTs > S.dismissedNegatiTs){
+    out.push({
+      id: 'sec_negati',
+      sev: 'warn',
+      t: neg.length+' accessi negati nelle ultime 24 ore',
+      s: 'Matricole inserite: '+[...new Set(neg.map(e=>e.matricola))].join(', '),
+      acts: [['Presa visione', 'ackAccessiNegati']]
+    });
+  }
   return out;
 }
 
@@ -900,7 +911,7 @@ function tabSegnalazioni(){
     const ackForm = isAckThis ? `
       <form class="subform" data-submit="ackSaveGeneric" data-alert-id="${esc(a.id)}" data-lotto-id="${esc(a.lottoId||'')}" data-evt-id="${esc(a.evt?a.evt.id:'')}" novalidate>
         <label class="field"><span>Nota di presa visione</span>
-          <textarea id="ack-note" maxlength="300" placeholder="Es. verificato con l'équipe, consumo programmato prima del termine"></textarea>
+          <textarea id="ack-note" maxlength="300" placeholder="Es. Verificato tentativo errato / risolto con l'operatore"></textarea>
         </label>
         <div class="btns">
           <button class="btn btn-primary btn-sm">Conferma presa visione</button>
@@ -921,7 +932,7 @@ function tabSegnalazioni(){
   }).join('')}</div>`;
 }
 
-const FILTERS=[['tutti','Tutti',()=>true],['chiave','Chiave',e=>/^chiave/.test(e.type)],['prelievo','Prelievi',e=>e.type==='prelievo'],['datrascrivere','Da trascrivere',e=>e.type==='prelievo'&&!e.trascritto],['giacenze','Carichi e rettifiche',e=>e.type==='carico'||e.type==='rettifica'||e.type==='censimento_lotto'],['sicurezza','Codice, accessi e personale',e=>e.type==='codice_cambiato'||e.type==='accesso_negato'||e.type==='personale_rimosso'||/^sicurezza/.test(e.type)||e.type==='gestione_scadenza']];
+const FILTERS=[['tutti','Tutti',()=>true],['chiave','Chiave',e=>/^chiave/.test(e.type)],['prelievo','Prelievi',e=>e.type==='prelievo'],['datrascrivere','Da trascrivere',e=>e.type==='prelievo'&&!e.trascritto],['giacenze','Carichi e rettifiche',e=>e.type==='carico'||e.type==='rettifica'||e.type==='censimento_lotto'],['sicurezza','Codice, accessi e personale',e=>e.type==='codice_cambiato'||e.type==='accesso_negato'||e.type==='personale_rimosso'||/^sicurezza/.test(e.type)||e.type==='gestione_scadenza'||e.type==='gestione_accessi_negati']];
 
 function tabRegistro(){
   const flt=(FILTERS.find(f=>f[0]===S.filter)||FILTERS[0])[2];
@@ -1457,6 +1468,15 @@ const A={
       t.focus();
     }
   },
+  ackAccessiNegati(d){
+    S.ackId = d.id;
+    render();
+    const t = $('#ack-note');
+    if(t) {
+      t.value = 'Verificati accessi falliti con il personale in turno. Nessuna anomalia.';
+      t.focus();
+    }
+  },
   snoozeLotto7(d){
     const lottoId = d.lottoId || d.id.replace('exp_','');
     S.snoozedLotti[lottoId] = Date.now() + (7 * 86400000);
@@ -1683,11 +1703,17 @@ const SUBMIT={
     S.coordForm=null; S.rettPrefill=null; render(); toast('Giacenza rettificata.');
   },
   async ackSaveGeneric(f){
+    const alertId = f.dataset.alertId;
     const lottoId = f.dataset.lottoId;
     const evtId = f.dataset.evtId;
     const note = val('ack-note');
 
-    if(lottoId){
+    if(alertId === 'sec_negati'){
+      S.dismissedNegatiTs = Date.now();
+      await addEvent('gestione_accessi_negati', {
+        nota: `Presa visione accessi negati: ${note || 'Verificato con l\'équipe'}`
+      });
+    } else if(lottoId){
       S.snoozedLotti[lottoId] = Date.now() + (365 * 86400000);
       await addEvent('gestione_scadenza', {
         lottoId,
