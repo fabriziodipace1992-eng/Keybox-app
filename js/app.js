@@ -924,9 +924,12 @@ const A={
   },
   async markTranscribed(){ const F=S.flow; F.evt=await Api.transcribed(F.evt); render(); },
   async markTranscribedById(d){
-    const e=S.events.find(x=>x.id===d.id);
-    if(!e) return;
-    await Api.transcribed(e);
+    const e = S.events.find(x => x.id === d.id);
+    if(e){
+      e.trascritto = true;
+      e.trascrittoTs = Date.now();
+    }
+    await Api.transcribed({ id: d.id });
     render();
     toast('Prelievo confermato come trascritto sul registro.');
   },
