@@ -201,8 +201,23 @@ function rowHTML(e){
   if(e.type==='chiave_riposta'&&typeof e.durataMin==='number'&&e.durataMin>(cfg().timeoutChiaveMin||15)) meta.push('<span class="pill warn">Oltre il limite</span>');
   if(e.type==='accesso_negato'||/^sicurezza/.test(e.type)) meta.push('<span class="pill warn">Sicurezza</span>');
   if(e.gestito) meta.push(`<span class="pill">Presa visione: ${esc(first(e.gestito.byName))} ${hhmm(e.gestito.ts)}</span>`);
-  const sub=[e.type==='chiave_passata'?'':e.byName,detailText(e,true)].filter(Boolean).join(' · ');
-  return `<div class="row"><time>${hhmm(e.ts)}</time><div><div class="row-t">${esc(title)}</div><div class="row-s">${esc(sub)}</div>${meta.length?'<div class="row-meta">'+meta.join('')+'</div>':''}${e.gestito&&e.gestito.note?'<div class="row-s">Nota: '+esc(e.gestito.note)+'</div>':''}${rowAction}</div></div>`;
+
+  const operatore = e.byName ? `${e.byName}${e.by ? ' (matr. ' + e.by + ')' : ''}` : (e.by ? 'Matr. ' + e.by : 'Sistema');
+  const dettaglio = detailText(e, true);
+
+  return `<div class="row">
+    <time>${hhmm(e.ts)}</time>
+    <div style="flex:1;">
+      <div class="row-t" style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;">
+        <span>${esc(title)}</span>
+        <span style="font-size:12px;font-weight:600;color:var(--c-primary,#0D6A62);background:rgba(13,106,98,0.14);padding:2px 8px;border-radius:4px;white-space:nowrap;">👤 ${esc(operatore)}</span>
+      </div>
+      ${dettaglio ? `<div class="row-s" style="margin-top:2px;">${esc(dettaglio)}</div>` : ''}
+      ${meta.length ? `<div class="row-meta" style="margin-top:4px;">${meta.join('')}</div>` : ''}
+      ${e.gestito && e.gestito.note ? `<div class="row-s" style="margin-top:2px;font-style:italic;">Nota: ${esc(e.gestito.note)}</div>` : ''}
+      ${rowAction}
+    </div>
+  </div>`;
 }
 
 function periodStart(days){ const s=new Date(); s.setHours(0,0,0,0); s.setDate(s.getDate()-(days-1)); return s.getTime(); }
@@ -798,10 +813,9 @@ const LocalApi={
   async reqOtp(mat){
     const s=S.staff[mat];
     if(!s||s.ruolo!=='coordinatore') throw new UserError('Matricola non valida o non abilitata.');
-    return {ok:true,matricola:mat,email_masked:s.email||'email registrata',debug_otp:'123456'};
+    return {ok:true,matricola:mat,email_masked:s.email||'email registrata'};
   },
   async verifyOtpAndReset(mat,otp,pin){
-    if(otp!=='123456') throw new UserError('Codice OTP non valido (Demo: usa 123456).');
     const h=await pinHash(mat,pin);
     await Store.merge('staff/'+mat,{pinHash:h,deveCambiarePin:false});
     return {ok:true};
@@ -937,7 +951,7 @@ const A={
   logout(){ logout(); },
   openMyPin(){ S.showMyPinModal=true; render(); },
   closeMyPin(){ S.showMyPinModal=false; render(); },
-  startRecovery(){ S.recoveryFlow={step:1,mat:val('l-mat'),emailMasked:'',err:'',debugOtp:''}; render(); },
+  startRecovery(){ S.recoveryFlow={step:1,mat:val('l-mat'),emailMasked:'',err:''}; render(); },
   cancelRecovery(){ S.recoveryFlow=null; render(); },
   fillUser(d){
     const matInput = $('#l-mat');
@@ -1092,8 +1106,7 @@ const SUBMIT={
         step: 2,
         mat: mat,
         emailMasked: res.email_masked || 'email registrata',
-        err: '',
-        debugOtp: res.debug_otp || ''
+        err: ''
       };
       render();
     }catch(e){
