@@ -265,20 +265,18 @@ function deltaText(delta,sign){
   return Object.keys(delta||{}).map(k=>{ const n=delta[k]; return fById(k).nome+' '+(sign?(n>0?'+':'')+n:fiale(Math.abs(n))); }).join(', ');
 }
 
-function formatLottiScalati(lottiList, delta){
-  if(!lottiList || !lottiList.length){
-    return '';
-  }
-  return ' (Lotto: ' + lottiList.map(x=>{
-    const q = x.take != null ? x.take : (x.fiale != null ? x.fiale : (x.qty != null ? x.qty : ''));
-    return x.lotto + (q ? ' · ' + fiale(q) : '');
+function formatLottiScalati(lottiList){
+  if(!lottiList || !lottiList.length) return '';
+  return ' (Lotti: ' + lottiList.map(x=>{
+    const q = x.take != null ? x.take : (x.fiale != null ? x.fiale : (x.qty != null ? x.qty : 1));
+    return x.lotto + ' (' + fiale(q) + ')';
   }).join(', ') + ')';
 }
 
 function detailText(e,short){
   switch(e.type){
     case 'prelievo': 
-      const lottiInfo = formatLottiScalati(e.lottiScalati, e.delta);
+      const lottiInfo = formatLottiScalati(e.lottiScalati);
       return [short?'':deltaText(e.delta), e.paziente, MOTIVO[e.motivo]||'', e.note].filter(Boolean).join(' · ') + lottiInfo;
     case 'carico': return [deltaText(e.delta,true),e.riferimento].filter(Boolean).join(' · ');
     case 'rettifica': return farmaciTutti().filter(f=>e.da&&e.a&&e.da[f.id]!==e.a[f.id]).map(f=>f.nome+' '+e.da[f.id]+' → '+e.a[f.id]).join(', ')+(e.motivo?' · '+e.motivo:'');
@@ -813,7 +811,7 @@ function viewPrelievo(){
         const lotti = (e.lottiScalati||[]).filter(x=>String(x.farmacoId||x.farmaco_id)===String(id));
         const lottiStr = lotti.length ? lotti.map(x=>{
           const q = x.take != null ? x.take : (x.fiale != null ? x.fiale : (x.qty != null ? x.qty : 1));
-          return `${x.lotto} (${q}f)`;
+          return `${x.lotto} (${fiale(q)})`;
         }).join(', ') : '—';
         return `<div class="twin-rec d-${f.tema}">
           <div class="twin-h"><span class="badge"><b>${esc(f.sigla)}</b></span><b>${esc(f.nome)} ${esc(f.sale||'')}</b><span class="muted">${esc(f.dosaggio)}</span></div>
@@ -821,7 +819,7 @@ function viewPrelievo(){
             <div><dt>Data</dt><dd>${ddmmyyyy(e.ts)}</dd></div>
             <div><dt>Ora</dt><dd>${hhmm(e.ts)}</dd></div>
             <div><dt>Paziente</dt><dd>${esc(e.paziente||'—')}</dd></div>
-            <div><dt>Lotti e Fiale</dt><dd class="mono">${esc(lottiStr)}</dd></div>
+            <div><dt>Lotti e Fiale</dt><dd class="mono" style="font-size:15px;line-height:1.3;">${esc(lottiStr)}</dd></div>
             <div><dt>Scarico totale</dt><dd>${-e.delta[id]}</dd></div>
             <div><dt>Giacenza</dt><dd>${e.giacenzaDopo?e.giacenzaDopo[id]:'—'}</dd></div>
           </dl>
@@ -1315,7 +1313,7 @@ const LocalApi={
   async staffPin(id,pin){ await Store.merge('staff/'+id,{pinHash:await pinHash(id,pin),deveCambiarePin:true}); },
   async staffDel(id){ const s=S.staff[id]; if(!s) return; await Store.del('staff/'+id); await addEvent('personale_rimosso',{matricola:id,nome:s.nome,ruolo:s.ruolo}); },
   appUrl(u){ return Store.merge('app/config',{appUrl:u}); },
-  async reset(){
+  async reset(){ 
     const staff=await Store.list('staff'); const logs=await Store.list('log');
     for(const s of staff) await Store.del('staff/'+s.id);
     for(const l of logs) await Store.del('log/'+l.id);
@@ -1949,6 +1947,7 @@ document.addEventListener('pointermove',e=>{
     if(Math.abs(dx)>8&&Math.abs(dx)>Math.abs(dy)*1.2){ SW.drag=true; SW.w.classList.add('drag'); SW.el.style.transition='none'; try{ SW.el.setPointerCapture(e.pointerId); }catch(_){} }
     else { if(Math.abs(dy)>10) SW.el=null; return; }
   }
+  SW.el=row;
   SW.el.style.transform='translateX('+Math.max(-DEL_W-28,Math.min(0,SW.base+dx))+'px)';
 });
 function endSwipe(e){
