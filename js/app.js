@@ -327,8 +327,7 @@ function viewRecovery(){
     <div class="block">
       <div class="eyebrow">Verifica OTP</div>
       <h1>Inserisci il codice e imposta il nuovo PIN</h1>
-      <p class="lead">Abbiamo inviato un codice OTP a 6 cifre a <b>${esc(rf.emailMasked)}</b> (valido 10 minuti).</p>
-      ${rf.debugOtp ? `<div class="status info" style="margin-block:10px;"><span class="ico">${IC.info}</span><div><b>Codice OTP di verifica:</b> <span class="mono" style="font-size:18px;letter-spacing:.1em;font-weight:700;">${esc(rf.debugOtp)}</span><br><small>Inserisci questo codice qui sotto.</small></div></div>` : ''}
+      <p class="lead">Abbiamo inviato un codice OTP a 6 cifre a <b>${esc(rf.emailMasked)}</b> (valido 10 minuti). Controlla la tua casella di posta.</p>
     </div>
     <form class="panel" data-submit="verifyOtp" novalidate>
       <label class="field"><span>Codice OTP (6 cifre)</span><input id="rec-otp" type="text" inputmode="numeric" maxlength="6" placeholder="Es. 492103"></label>
