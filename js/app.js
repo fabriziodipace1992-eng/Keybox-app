@@ -632,11 +632,11 @@ function tabImpostazioni(){
       <p class="fine">Modifica nome, dosaggio e soglia di riordino. Se un farmaco non è più in uso, toccando "Archivia" non comparirà più nei prelievi ma resterà nello storico.</p>
       <form class="block" data-submit="farmaciSave" novalidate>
         ${farmaciTutti().map(f=>`
-          <div class="drug d-${f.tema}" style="flex-wrap:wrap;border-left:5px solid var(--c-primary,#0D6A62);margin-bottom:12px;padding:12px;background:rgba(255,255,255,0.7);border-radius:8px;">
+          <div class="subform" style="border-left:4px solid var(--c-primary,#0D6A62);margin-bottom:12px;padding:12px;">
             <div style="display:flex;align-items:center;justify-content:space-between;width:100%;margin-bottom:8px;">
               <div style="display:flex;align-items:center;gap:8px;">
-                <span class="badge"><b>${esc(f.sigla)}</b></span>
-                <b>${esc(f.nome)}</b> ${f.attivo===false?'<span class="pill">Archiviato</span>':''}
+                <span class="badge d-${f.tema}"><b>${esc(f.sigla)}</b></span>
+                <span style="font-weight:700;font-size:16px;">${esc(f.nome)}</span> ${f.attivo===false?'<span class="pill">Archiviato</span>':''}
               </div>
               <button type="button" class="btn btn-quiet btn-sm" data-act="farmacoToggle" data-id="${esc(f.id)}">${f.attivo===false?'Ripristina':'Archivia'}</button>
             </div>
