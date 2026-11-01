@@ -264,11 +264,22 @@ const MOTIVO={somministrazione:'Somministrazione',rottura:'Fiala rotta o caduta'
 function deltaText(delta,sign){
   return Object.keys(delta||{}).map(k=>{ const n=delta[k]; return fById(k).nome+' '+(sign?(n>0?'+':'')+n:fiale(Math.abs(n))); }).join(', ');
 }
+
+function formatLottiScalati(lottiList, delta){
+  if(!lottiList || !lottiList.length){
+    return '';
+  }
+  return ' (Lotto: ' + lottiList.map(x=>{
+    const q = x.take != null ? x.take : (x.fiale != null ? x.fiale : (x.qty != null ? x.qty : ''));
+    return x.lotto + (q ? ' · ' + fiale(q) : '');
+  }).join(', ') + ')';
+}
+
 function detailText(e,short){
   switch(e.type){
     case 'prelievo': 
-      const lottiInfo = (e.lottiScalati && e.lottiScalati.length) ? ' (Lotti: ' + e.lottiScalati.map(x=>x.lotto+': '+x.take+'f').join(', ') + ')' : '';
-      return [short?'':deltaText(e.delta),e.paziente,MOTIVO[e.motivo]||'',e.note].filter(Boolean).join(' · ') + lottiInfo;
+      const lottiInfo = formatLottiScalati(e.lottiScalati, e.delta);
+      return [short?'':deltaText(e.delta), e.paziente, MOTIVO[e.motivo]||'', e.note].filter(Boolean).join(' · ') + lottiInfo;
     case 'carico': return [deltaText(e.delta,true),e.riferimento].filter(Boolean).join(' · ');
     case 'rettifica': return farmaciTutti().filter(f=>e.da&&e.a&&e.da[f.id]!==e.a[f.id]).map(f=>f.nome+' '+e.da[f.id]+' → '+e.a[f.id]).join(', ')+(e.motivo?' · '+e.motivo:'');
     case 'censimento_lotto': return (e.nota||'');
@@ -349,7 +360,6 @@ function alerts(){
   const k=S.key;
   if(k&&k.status==='out'&&mins(k.since)>tout) out.push({sev:'crit',t:'Chiave fuori dalla keybox da '+mins(k.since)+' minuti',s:'Presa da '+(k.byName||'?')+' alle '+hhmm(k.since)+'. Limite impostato: '+tout+' min.',acts:[['Registra come riposta','markKeyIn']]});
   
-  // Riconcilia lo stato dei lotti silenziati anche leggendo lo storico eventi di Supabase
   const ackedLottiFromEvents = new Set();
   S.events.filter(e => e.type === 'gestione_scadenza' && e.lottoId).forEach(e => {
     if(e.untilTs && now < e.untilTs) S.snoozedLotti[e.lottoId] = e.untilTs;
@@ -382,7 +392,7 @@ function alerts(){
           lottoId: l.id,
           sev:'warn', 
           t:`In scadenza: ${f.nome} · Lotto ${l.lotto}`, 
-          s:`Scade tra ${diffDays} giorni (${l.scadenza}). In cassaforte: ${fiale(rimaste)}. Priorità prelievo FEFO attiva.`, 
+          s:`Scade tra ${diffDays} giorni (${l.scadenza}). In cassaforte: ${fiale(rimaste)}. Priorità di prelievo attiva.`, 
           acts:[
             ['Presa visione', 'ackLottoExp'],
             ['Postponi di 7 gg', 'snoozeLotto7'],
@@ -412,7 +422,6 @@ function alerts(){
     });
   });
 
-  // Accessi negati: legge anche l'ultimo evento di presa visione salvato nel DB
   const lastNegatiAckEvt = S.events.find(e => e.type === 'gestione_accessi_negati');
   const effectiveDismissedTs = Math.max(S.dismissedNegatiTs || 0, lastNegatiAckEvt ? lastNegatiAckEvt.ts : 0);
 
@@ -602,7 +611,7 @@ function viewAssocLottoModal(){
       <p class="err" id="as-err"></p>
       
       <div class="btns" style="margin-top:16px;">
-        <button class="btn btn-primary btn-block">Salva e Associa al FEFO</button>
+        <button class="btn btn-primary btn-block">Salva e Associa</button>
         <button type="button" class="btn btn-quiet btn-block" data-act="closeAssocLotto">Annulla</button>
       </div>
     </form>
@@ -708,7 +717,7 @@ function drugRow(f,n){
       ${nextLotto ? `
         <div class="row-meta" style="margin-top:4px;">
           <span class="pill info" style="white-space:normal;display:inline-block;line-height:1.35;">
-            Prossimo FEFO: <b>${esc(nextLotto.lotto)}</b> (Scad. ${esc(nextLotto.scadenza)}) · <b>${rimasteNext} fiale rimaste</b> (Scatole da ${unitaScatola})
+            In uso: <b>${esc(nextLotto.lotto)}</b> (Scad. ${esc(nextLotto.scadenza)}) · <b>${rimasteNext} fiale rimaste</b> (Scatole da ${unitaScatola})
           </span>
         </div>` : (n>0 ? `<div class="row-meta" style="margin-top:4px;"><span class="pill warn">Nessun lotto associato</span></div>` : '')}
       ${low ? '<div class="row-meta"><span class="pill warn">Sotto soglia ('+f.soglia+')</span></div>' : ''}
@@ -764,7 +773,7 @@ function viewPrelievo(){
     const sel=farmaci().filter(f=>(F.qty[f.id]||0)>0);
     return `${flowHead(2,3,'Passo 2 di 3')}
       <h1>Controlla l’etichetta della fiala</h1>
-      <p class="lead">Confronta nome, dosaggio e il lotto consigliato secondo la scadenza (FEFO) prima di confermare.</p>
+      <p class="lead">Confronta nome, dosaggio e il lotto da prelevare prima di confermare.</p>
       ${sel.map(f=>{ 
         const q=F.qty[f.id];
         const plan = getFefoPlan(f.id, q);
@@ -773,7 +782,7 @@ function viewPrelievo(){
           <div class="verify-dose">${esc(f.dosaggio)}</div>
           
           <div class="subform" style="margin-block:10px;padding:10px;border-left:4px solid var(--accent,#0D6A62);">
-            <div style="font-weight:700;font-size:13px;margin-bottom:6px;color:var(--accent,#0D6A62);">📦 Istruzioni di prelievo FEFO:</div>
+            <div style="font-weight:700;font-size:13px;margin-bottom:6px;color:var(--accent,#0D6A62);">📦 Da quale scatola/lotto prelevare:</div>
             ${plan.length ? plan.map(p => `
               <div style="font-size:14px;display:flex;justify-content:space-between;align-items:center;margin-block:6px;gap:8px;flex-wrap:wrap;">
                 <span>Preleva <b>${fiale(p.take)}</b> da Lotto <b class="mono">${esc(p.lotto)}</b> (Scad. ${esc(p.scadenza)}) · Scatola da ${p.unitaPerScatola}</span>
@@ -802,7 +811,10 @@ function viewPrelievo(){
       ${sel.map(id=>{ 
         const f=fById(id);
         const lotti = (e.lottiScalati||[]).filter(x=>String(x.farmacoId||x.farmaco_id)===String(id));
-        const lottiStr = lotti.length ? lotti.map(x=>`${x.lotto} (${x.take}f)`).join(', ') : '—';
+        const lottiStr = lotti.length ? lotti.map(x=>{
+          const q = x.take != null ? x.take : (x.fiale != null ? x.fiale : (x.qty != null ? x.qty : 1));
+          return `${x.lotto} (${q}f)`;
+        }).join(', ') : '—';
         return `<div class="twin-rec d-${f.tema}">
           <div class="twin-h"><span class="badge"><b>${esc(f.sigla)}</b></span><b>${esc(f.nome)} ${esc(f.sale||'')}</b><span class="muted">${esc(f.dosaggio)}</span></div>
           <dl class="twin-grid">
@@ -847,7 +859,7 @@ function viewCoord(){
 function formCarico(){
   return `<form class="subform" data-submit="carico" novalidate>
     <h3>Carico dalla farmacia per scatole/lotti</h3>
-    <p class="fine">Specifica numero di scatole, quante fiale contiene ogni scatola, lotto e scadenza. Il prelievo scalerà automaticamente per scadenza (FEFO).</p>
+    <p class="fine">Specifica numero di scatole, quante fiale contiene ogni scatola, lotto e scadenza. Il prelievo scalerà automaticamente per scadenza.</p>
     
     ${farmaci().map(f=>`
       <div class="subform" style="border-left:4px solid var(--accent,#0D6A62);margin-bottom:12px;padding:10px;">
@@ -902,7 +914,7 @@ function tabStato(){
 
       <section class="panel">
         <div class="sec-h">
-          <h2>Scatole e Lotti in cassaforte (FEFO)</h2>
+          <h2>Scatole e Lotti in cassaforte (per scadenza)</h2>
           <span class="pill info">${lottiAttivi.length} attivi</span>
         </div>
         <p class="fine">Elenco ordinato per priorità di scadenza. Il prelievo scala automaticamente la confezione con scadenza più vicina.</p>
@@ -1182,7 +1194,7 @@ const LocalApi={
     await Store.set('staff/'+p.matricola,{nome:p.nome,ruolo:'coordinatore',email:p.email,pinHash:await pinHash(p.matricola,p.pin),attivo:true,deveCambiarePin:false});
     await Store.set('app/state',{giacenza:p.giacenza,ts:now,fonte:'avvio'});
     await Store.set('app/key',{status:'in',since:now});
-    await Store.set('app/config',{reparto:p.reparto,demo:false,codice:p.codice,codiceDal:now,codiceDa:p.matricola,codiceDaNome:p.nome,rotazioneGiorni:7,timeoutChiaveMin:15,sessioneMin:5,farmaci:DEFAULT_FARMACI,appUrl:''});
+    await Store.set('app/config',{reparto:p.reparto,demo:false,codice:p.codice,codiceDal:now,codiceDa:p.matricola,codiceDaNome:p.nome,rotazioneGiorni:7,timeoutChiaveMin:15,sessioneMin:5,farmaci:DEFAULTFARMACI_SAFE(),appUrl:''});
     S.meId=p.matricola;
     S.meUser={nome:p.nome,ruolo:'coordinatore',id:p.matricola,email:p.email,deveCambiarePin:false};
   },
@@ -1308,8 +1320,14 @@ const LocalApi={
     for(const s of staff) await Store.del('staff/'+s.id);
     for(const l of logs) await Store.del('log/'+l.id);
     await Store.del('app/key'); await Store.del('app/state'); await Store.del('app/config');
+    localStorage.removeItem(LS_SNOOZE_KEY);
+    localStorage.removeItem(LS_NEGATI_KEY);
   }
 };
+
+function DEFAULTFARMACI_SAFE(){
+  return DEFAULT_FARMACI;
+}
 
 async function rpc(fn,args){
   const h={'Content-Type':'application/json','apikey':SUPABASE_KEY};
@@ -1410,7 +1428,13 @@ const RemoteApi={
   staffPin(id,pin){ return RemoteApi.act('staff_pin',{matricola:id,pin}); },
   staffDel(id){ return RemoteApi.act('staff_delete',{matricola:id}); },
   appUrl(u){ return RemoteApi.act('app_url',{url:u}); },
-  async reset(){ await RemoteApi.act('reset'); S.token=null; S.publicInfo=null; clearRemoteData(); await loadPublic(); }
+  async reset(){ 
+    await RemoteApi.act('reset'); 
+    S.token=null; S.publicInfo=null; clearRemoteData(); 
+    localStorage.removeItem(LS_SNOOZE_KEY);
+    localStorage.removeItem(LS_NEGATI_KEY);
+    await loadPublic(); 
+  }
 };
 const Api=REMOTE_ON?RemoteApi:LocalApi;
 
@@ -1511,7 +1535,7 @@ const A={
     render();
     const t = $('#ack-note');
     if(t) {
-      t.value = 'Presa visione della scadenza. Monitoraggio attivo in reparto.';
+      t.value = 'Presa visione della scadenza. Monitoraggio attivo in cassaforte.';
       t.focus();
     }
   },
@@ -1778,7 +1802,7 @@ const SUBMIT={
 
     S.ackId = null;
     render();
-    toast('Presa visione registrata nel log del reparto.');
+    toast('Presa visione registrata.');
   },
   async codeManual(){ const c=val('cm-code'); const w=isWeak(c); if(w){ $('#cm-err').textContent=w; return; } S.codeFlow={step:1,code:c}; render(); },
   async regoleSave(){
