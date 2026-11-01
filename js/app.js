@@ -267,10 +267,8 @@ function deltaText(delta,sign){
 
 function formatLottiScalati(lottiList){
   if(!lottiList || !lottiList.length) return '';
-  return ' (Lotti: ' + lottiList.map(x=>{
-    const q = x.take != null ? x.take : (x.fiale != null ? x.fiale : (x.qty != null ? x.qty : 1));
-    return x.lotto + ' (' + fiale(q) + ')';
-  }).join(', ') + ')';
+  const lottiUnici = [...new Set(lottiList.map(x => x.lotto))];
+  return ' (Lotto: ' + lottiUnici.join(', ') + ')';
 }
 
 function detailText(e,short){
@@ -809,17 +807,14 @@ function viewPrelievo(){
       ${sel.map(id=>{ 
         const f=fById(id);
         const lotti = (e.lottiScalati||[]).filter(x=>String(x.farmacoId||x.farmaco_id)===String(id));
-        const lottiStr = lotti.length ? lotti.map(x=>{
-          const q = x.take != null ? x.take : (x.fiale != null ? x.fiale : (x.qty != null ? x.qty : 1));
-          return `${x.lotto} (${fiale(q)})`;
-        }).join(', ') : '—';
+        const lottiStr = lotti.length ? [...new Set(lotti.map(x => x.lotto))].join(', ') : '—';
         return `<div class="twin-rec d-${f.tema}">
           <div class="twin-h"><span class="badge"><b>${esc(f.sigla)}</b></span><b>${esc(f.nome)} ${esc(f.sale||'')}</b><span class="muted">${esc(f.dosaggio)}</span></div>
           <dl class="twin-grid">
             <div><dt>Data</dt><dd>${ddmmyyyy(e.ts)}</dd></div>
             <div><dt>Ora</dt><dd>${hhmm(e.ts)}</dd></div>
             <div><dt>Paziente</dt><dd>${esc(e.paziente||'—')}</dd></div>
-            <div><dt>Lotti e Fiale</dt><dd class="mono" style="font-size:15px;line-height:1.3;">${esc(lottiStr)}</dd></div>
+            <div><dt>Lotto</dt><dd class="mono" style="font-size:18px;font-weight:700;">${esc(lottiStr)}</dd></div>
             <div><dt>Scarico totale</dt><dd>${-e.delta[id]}</dd></div>
             <div><dt>Giacenza</dt><dd>${e.giacenzaDopo?e.giacenzaDopo[id]:'—'}</dd></div>
           </dl>
