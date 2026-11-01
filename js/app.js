@@ -126,17 +126,18 @@ const DEFAULT_FARMACI=[
 const S={
   loaded:false, loadError:false, staffLoaded:false, readOnly:false,
   config:null, base:null, key:null, staff:{}, events:[],
-  meId:null, view:'home', tab:'stato', flow:null,
+  meId:null, meUser:null, view:'home', tab:'stato', flow:null,
   codeShownUntil:0, confirmTake:false,
   loginErr:'', fails:0, lockUntil:0, lastActivity:Date.now(),
   period:14, filter:'tutti', regLimit:120, showTable:false,
   codeFlow:null, coordForm:null, rettPrefill:null, ackId:null, swipeOpen:null, delAsk:null, token:null, codeValue:'', publicInfo:null, pinFor:null,
-  qrUrl:null, revealCode:false, resetStep:0, scrollTo:null
+  qrUrl:null, revealCode:false, resetStep:0, scrollTo:null,
+  showMyPinModal:false
 };
 const cfg=()=>S.config||{};
 const farmaci=()=>(S.config&&S.config.farmaci)||DEFAULT_FARMACI;
 const fById=id=>farmaci().find(f=>f.id===id)||{id,nome:id,sale:'',dosaggio:'',tema:'m',sigla:'?'};
-const me=()=>S.meId?S.staff[S.meId]:null;
+const me=()=>S.meUser||(S.meId?S.staff[S.meId]:null);
 const isCoord=()=>{const m=me();return !!m&&m.ruolo==='coordinatore';};
 
 function stock(){
@@ -240,14 +241,15 @@ function render(passive){
   if(S.loadError) html=viewError();
   else if(!S.loaded) html=viewLoading();
   else if(!S.config) html=viewSetup();
-  else if(S.meId&&!S.staffLoaded) html=viewLoading();
+  else if(S.meId&&!S.staffLoaded&&!REMOTE_ON) html=viewLoading();
   else if(!me()) html=viewLogin();
+  else if(me()&&me().deveCambiarePin) html=viewMustChangePin();
   else {
     let body;
     if(S.view==='prelievo'&&S.flow) body=viewPrelievo();
     else if(S.view==='coord'&&isCoord()) body=viewCoord();
     else body=viewHome();
-    html=viewTop()+`<main class="wrap${S.view==='coord'?' wide':''}">${body}</main>`;
+    html=viewTop()+`<main class="wrap${S.view==='coord'?' wide':''}">${body}</main>${S.showMyPinModal?viewMyPinModal():''}`;
   }
   app.innerHTML=html;
   if(keep) Object.keys(keep).forEach(id=>{ const el=document.getElementById(id); if(el) el.value=keep[id]; });
@@ -270,11 +272,49 @@ function viewTop(){
   const m=me(); const c=cfg(); const n=isCoord()?alerts().length:0;
   return `<header class="top"><div class="top-in">
     <div class="brand"><span class="brand-mark">${IC.box}</span><div><div class="brand-name">Keybox stupefacenti</div><div class="brand-sub">${esc(c.reparto||'')}</div></div></div>
-    <div class="who"><div class="who-name">${esc(m.nome)}</div><div class="who-role">${m.ruolo==='coordinatore'?'Coordinatore':'Infermiere'} · ${esc(S.meId)}</div></div>
+    <div class="who">
+      <div class="who-name">${esc(m.nome)}</div>
+      <div class="who-role">${m.ruolo==='coordinatore'?'Coordinatore':'Infermiere'} · <button class="btn-link" data-act="openMyPin" title="Cambia il tuo PIN">Modifica PIN</button></div>
+    </div>
     <button class="btn btn-quiet btn-sm" data-act="logout">Esci</button>
   </div>
   ${isCoord()?`<nav class="switch" aria-label="Sezione"><button data-act="goView" data-v="home" aria-pressed="${S.view!=='coord'}">Reparto</button><button data-act="goView" data-v="coord" aria-pressed="${S.view==='coord'}"><span class="hide-sm">Pannello coordinatore</span><span class="show-sm">Coordinatore</span>${n?` <span class="count">${n}</span>`:''}</button></nav>`:''}
   </header>`;
+}
+
+function viewMustChangePin(){
+  const m=me();
+  return `<main class="wrap">
+    <div class="block">
+      <div class="eyebrow">Sicurezza e Tracciabilità</div>
+      <h1>Imposta il tuo PIN personale</h1>
+      <p class="lead">Ciao <b>${esc(m.nome)}</b>. Per garantire la responsabilità individuale e l’imputabilità degli accessi, sostituisci il PIN temporaneo con un codice segreto personale da 4 a 6 cifre.</p>
+    </div>
+    <form class="panel" data-submit="saveMustChangePin" novalidate>
+      <label class="field"><span>Nuovo PIN personale</span><input id="ch-new" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"><small>Da 4 a 6 cifre</small></label>
+      <label class="field"><span>Conferma nuovo PIN</span><input id="ch-conf" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"></label>
+      <p class="err" id="ch-err"></p>
+      <button class="btn btn-primary btn-block btn-lg">Conferma e accedi</button>
+    </form>
+    <div class="btns" style="margin-top:12px;">
+      <button class="btn btn-quiet btn-block" data-act="logout">Annulla ed esci</button>
+    </div>
+  </main>`;
+}
+
+function viewMyPinModal(){
+  return `<div class="modal-backdrop"><div class="panel modal-card">
+    <div class="sec-h"><h2>Modifica il tuo PIN personale</h2><button class="btn btn-quiet btn-sm" data-act="closeMyPin">✕</button></div>
+    <form data-submit="saveMyPin" novalidate>
+      <label class="field"><span>Nuovo PIN personale</span><input id="mp-new" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"><small>Da 4 a 6 cifre</small></label>
+      <label class="field"><span>Conferma nuovo PIN</span><input id="mp-conf" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"></label>
+      <p class="err" id="mp-err"></p>
+      <div class="btns" style="margin-top:16px;">
+        <button class="btn btn-primary btn-block">Aggiorna PIN</button>
+        <button type="button" class="btn btn-quiet btn-block" data-act="closeMyPin">Annulla</button>
+      </div>
+    </form>
+  </div></div>`;
 }
 
 function viewSetup(){
@@ -573,12 +613,12 @@ function tabImpostazioni(){
     <section class="panel"><div class="sec-h"><h2>Personale</h2><span class="muted" style="font-size:14px">${staff.filter(s=>s.attivo!==false).length} attivi</span></div>
       <p class="fine">Scorri una persona verso sinistra per eliminarla.</p>
       <div>${staff.map(s=>{ const canDel=s.id!==S.meId; return `<div class="staff-item"><div class="swipe${S.swipeOpen===s.id?' open':''}"${canDel?` data-swipe="${esc(s.id)}"`:''}>${canDel?`<button class="swipe-del" data-act="staffDelAsk" data-id="${esc(s.id)}">Elimina</button>`:''}<div class="staff"><div><b>${esc(s.nome)}</b> ${s.attivo===false?'<span class="pill">Disattivato</span>':''}<div class="row-s">${s.ruolo==='coordinatore'?'Coordinatore':'Infermiere'} · matricola <span class="mono">${esc(s.id)}</span></div></div>
-        <div class="btns"><button class="btn btn-quiet btn-sm" data-act="pinOpen" data-id="${esc(s.id)}">Nuovo PIN</button>${s.id!==S.meId?`<button class="btn btn-quiet btn-sm" data-act="staffToggle" data-id="${esc(s.id)}">${s.attivo===false?'Riattiva':'Disattiva'}</button>`:''}</div></div></div>
+        <div class="btns"><button class="btn btn-quiet btn-sm" data-act="pinOpen" data-id="${esc(s.id)}">Resetta PIN</button>${s.id!==S.meId?`<button class="btn btn-quiet btn-sm" data-act="staffToggle" data-id="${esc(s.id)}">${s.attivo===false?'Riattiva':'Disattiva'}</button>`:''}</div></div></div>
         ${S.delAsk===s.id?`<div class="subform del-ask"><p><b>Eliminare ${esc(s.nome)}?</b></p><p class="sub">Non potrà più accedere all\u2019app. I movimenti già registrati restano nel registro con il suo nome.</p><div class="btns"><button class="btn btn-danger btn-sm" data-act="staffDel" data-id="${esc(s.id)}">Elimina definitivamente</button><button class="btn btn-quiet btn-sm" data-act="staffDelCancel">Annulla</button></div></div>`:''}
-        ${S.pinFor===s.id?`<form class="subform" data-submit="pinSave" data-id="${esc(s.id)}" novalidate><label class="field"><span>Nuovo PIN per ${esc(s.nome)}</span><input id="pn-pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"></label><p class="err" id="pn-err"></p><div class="btns"><button class="btn btn-primary btn-sm">Salva il PIN</button><button type="button" class="btn btn-quiet btn-sm" data-act="pinCancel">Annulla</button></div></form>`:''}</div>`; }).join('')}</div>
+        ${S.pinFor===s.id?`<form class="subform" data-submit="pinSave" data-id="${esc(s.id)}" novalidate><label class="field"><span>Nuovo PIN provvisorio per ${esc(s.nome)}</span><input id="pn-pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"><small>Dovrà reimpostarlo al login successivo.</small></label><p class="err" id="pn-err"></p><div class="btns"><button class="btn btn-primary btn-sm">Salva il PIN provvisorio</button><button type="button" class="btn btn-quiet btn-sm" data-act="pinCancel">Annulla</button></div></form>`:''}</div>`; }).join('')}</div>
       <form class="subform" data-submit="staffAdd" novalidate><h3>Aggiungi una persona</h3>
         <label class="field"><span>Nome e cognome</span><input id="sa-nome" type="text" maxlength="60"></label>
-        <div class="two"><label class="field"><span>Matricola</span><input id="sa-mat" type="text" inputmode="numeric" maxlength="12"></label><label class="field"><span>PIN iniziale</span><input id="sa-pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"></label></div>
+        <div class="two"><label class="field"><span>Matricola</span><input id="sa-mat" type="text" inputmode="numeric" maxlength="12"></label><label class="field"><span>PIN provvisorio</span><input id="sa-pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"></label></div>
         <label class="field"><span>Ruolo</span><select id="sa-ruolo"><option value="infermiere">Infermiere</option><option value="coordinatore">Coordinatore</option></select></label>
         <p class="err" id="sa-err"></p><div class="btns"><button class="btn btn-secondary btn-sm">Aggiungi</button></div></form></section>
     <section class="panel"><h2>QR code di accesso</h2>
@@ -600,7 +640,7 @@ async function run(fn){ try{ await fn(); }catch(e){ if(e&&e.session){ logout('Se
 function saveSession(){ try{ if(REMOTE_ON?S.token:S.meId) sessionStorage.setItem(SS_KEY,JSON.stringify(REMOTE_ON?{token:S.token,last:S.lastActivity}:{id:S.meId,last:S.lastActivity})); else sessionStorage.removeItem(SS_KEY); }catch(e){} }
 function logout(msg){
   Api.logout().catch(()=>{}); S.codeValue='';
-  S.meId=null; S.view='home'; S.tab='stato'; S.filter='tutti'; S.flow=null; S.codeShownUntil=0; S.confirmTake=false; S.codeFlow=null; S.coordForm=null; S.ackId=null; S.revealCode=false; S.resetStep=0; S.pinFor=null;
+  S.meId=null; S.meUser=null; S.view='home'; S.tab='stato'; S.filter='tutti'; S.flow=null; S.codeShownUntil=0; S.confirmTake=false; S.codeFlow=null; S.coordForm=null; S.ackId=null; S.revealCode=false; S.resetStep=0; S.pinFor=null; S.showMyPinModal=false;
   saveSession(); render(); if(msg) toast(msg);
 }
 function isWeak(code){
@@ -629,16 +669,23 @@ const LocalApi={
       throw new UserError('Matricola o PIN non corretti.');
     }
     S.meId=mat;
+    S.meUser=s;
   },
   async logout(){},
   async refresh(){},
   async setup(p){
     const now=Date.now();
-    await Store.set('staff/'+p.matricola,{nome:p.nome,ruolo:'coordinatore',pinHash:await pinHash(p.matricola,p.pin),attivo:true});
+    await Store.set('staff/'+p.matricola,{nome:p.nome,ruolo:'coordinatore',pinHash:await pinHash(p.matricola,p.pin),attivo:true,deveCambiarePin:false});
     await Store.set('app/state',{giacenza:p.giacenza,ts:now,fonte:'avvio'});
     await Store.set('app/key',{status:'in',since:now});
     await Store.set('app/config',{reparto:p.reparto,demo:false,codice:p.codice,codiceDal:now,codiceDa:p.matricola,codiceDaNome:p.nome,rotazioneGiorni:7,timeoutChiaveMin:15,sessioneMin:5,farmaci:DEFAULT_FARMACI,appUrl:''});
     S.meId=p.matricola;
+    S.meUser={nome:p.nome,ruolo:'coordinatore',id:p.matricola,deveCambiarePin:false};
+  },
+  async changeMyPin(pin){
+    const h=await pinHash(S.meId,pin);
+    await Store.merge('staff/'+S.meId,{pinHash:h,deveCambiarePin:false});
+    if(S.meUser) S.meUser.deveCambiarePin=false;
   },
   async takeKey(){
     const k=S.key; const mine=!!(k&&k.status==='out'&&k.by===S.meId); const other=!!(k&&k.status==='out'&&!mine);
@@ -677,9 +724,9 @@ const LocalApi={
   async codeSet(code){ await Store.merge('app/config',{codice:code,codiceDal:Date.now(),codiceDa:S.meId,codiceDaNome:me().nome}); await addEvent('codice_cambiato',{}); },
   rules(o){ return Store.merge('app/config',o); },
   farmaci(list){ return Store.merge('app/config',{farmaci:list}); },
-  async staffAdd(o){ await Store.set('staff/'+o.matricola,{nome:o.nome,ruolo:o.ruolo,pinHash:await pinHash(o.matricola,o.pin),attivo:true}); },
+  async staffAdd(o){ await Store.set('staff/'+o.matricola,{nome:o.nome,ruolo:o.ruolo,pinHash:await pinHash(o.matricola,o.pin),attivo:true,deveCambiarePin:true}); },
   staffToggle(id){ const s=S.staff[id]; return Store.merge('staff/'+id,{attivo:!!(s&&s.attivo===false)}); },
-  async staffPin(id,pin){ await Store.merge('staff/'+id,{pinHash:await pinHash(id,pin)}); },
+  async staffPin(id,pin){ await Store.merge('staff/'+id,{pinHash:await pinHash(id,pin),deveCambiarePin:true}); },
   async staffDel(id){ const s=S.staff[id]; if(!s) return; await Store.del('staff/'+id); await addEvent('personale_rimosso',{matricola:id,nome:s.nome,ruolo:s.ruolo}); },
   appUrl(u){ return Store.merge('app/config',{appUrl:u}); },
   async reset(){
@@ -707,13 +754,13 @@ async function rpc(fn,args){
   return j;
 }
 function clearRemoteData(){
-  S.events=[]; S.staff={}; S.staffLoaded=false; S.key=null; S.base=null; S.codeValue=''; S.meId=null;
+  S.events=[]; S.staff={}; S.staffLoaded=false; S.key=null; S.base=null; S.codeValue=''; S.meId=null; S.meUser=null;
   S.config=S.publicInfo||null;
 }
 function applyRemote(st){
   if(!st||!st.me) return;
   S.config=st.config; S.base=st.base; S.key=st.key; S.events=st.events||[];
-  const m={}; (st.staff||[]).forEach(x=>{ m[x.id]=x; }); S.staff=m; S.staffLoaded=true; S.meId=st.me.id;
+  const m={}; (st.staff||[]).forEach(x=>{ m[x.id]=x; }); S.staff=m; S.staffLoaded=true; S.meId=st.me.id; S.meUser=st.me;
 }
 async function loadPublic(){
   const pub=await rpc('kb_public',{});
@@ -731,6 +778,7 @@ const RemoteApi={
   async login(mat,pin){ const r=await rpc('kb_login',{p_mat:mat,p_pin:pin}); if(r&&r.error) throw new UserError(r.error); S.token=r.token; await RemoteApi.refresh(true); },
   async logout(){ const t=S.token; S.token=null; clearRemoteData(); if(t) await rpc('kb_logout',{p_token:t}); },
   async setup(p){ const r=await rpc('kb_setup',{p}); if(r&&r.error) throw new UserError(r.error); S.token=r.token; await loadPublic(); await RemoteApi.refresh(true); },
+  changeMyPin(pin){ return RemoteApi.act('change_my_pin',{pin}); },
   async takeKey(){ const r=await RemoteApi.act('take_key',{}); return r&&r.codice?String(r.codice):''; },
   returnKey(){ return RemoteApi.act('return_key'); },
   markKeyIn(){ return RemoteApi.act('return_key'); },
@@ -758,6 +806,8 @@ const A={
   cancelFlow(){ S.view='home'; S.flow=null; render(); window.scrollTo(0,0); },
   setTab(d){ S.tab=d.t; S.codeFlow=null; S.coordForm=null; S.ackId=null; S.resetStep=0; S.delAsk=null; S.swipeOpen=null; render(); },
   logout(){ logout(); },
+  openMyPin(){ S.showMyPinModal=true; render(); },
+  closeMyPin(){ S.showMyPinModal=false; render(); },
   fillUser(d){
     const matInput = $('#l-mat');
     const pinInput = $('#l-pin');
@@ -883,6 +933,24 @@ const SUBMIT={
     }
     S.fails=0; S.loginErr=''; S.loginMat=''; S.lastActivity=Date.now(); S.view='home'; saveSession(); render(); window.scrollTo(0,0);
   },
+  async saveMustChangePin(){
+    const p1=val('ch-new'), p2=val('ch-conf'); const err=$('#ch-err');
+    if(!/^\d{4,6}$/.test(p1)){ err.textContent='Il PIN deve avere da 4 a 6 cifre numeriche.'; return; }
+    if(p1!==p2){ err.textContent='I due PIN inseriti non coincidono.'; return; }
+    await Api.changeMyPin(p1);
+    if(me()) me().deveCambiarePin=false;
+    render();
+    toast('PIN personale impostato con successo.');
+  },
+  async saveMyPin(){
+    const p1=val('mp-new'), p2=val('mp-conf'); const err=$('#mp-err');
+    if(!/^\d{4,6}$/.test(p1)){ err.textContent='Il PIN deve avere da 4 a 6 cifre numeriche.'; return; }
+    if(p1!==p2){ err.textContent='I due PIN inseriti non coincidono.'; return; }
+    await Api.changeMyPin(p1);
+    S.showMyPinModal=false;
+    render();
+    toast('PIN aggiornato.');
+  },
   async setup(){
     const rep=val('su-rep'), nome=val('su-nome'), mat=val('su-mat'), pin=val('su-pin'), code=val('su-code'); const err=$('#su-err');
     const g={}; let gBad=false; DEFAULT_FARMACI.forEach(f=>{ const v=val('su-g-'+f.id); if(!/^\d{1,3}$/.test(v)) gBad=true; g[f.id]=Number(v); });
@@ -931,13 +999,13 @@ const SUBMIT={
     if(!nome){ err.textContent='Scrivi nome e cognome.'; return; }
     if(!/^[A-Za-z0-9]{3,12}$/.test(mat)){ err.textContent='La matricola deve avere da 3 a 12 lettere o cifre.'; return; }
     if(S.staff[mat]){ err.textContent='Questa matricola è già presente.'; return; }
-    if(!/^\d{4,6}$/.test(pin)){ err.textContent='Il PIN deve avere da 4 a 6 cifre.'; return; }
+    if(!/^\d{4,6}$/.test(pin)){ err.textContent='Il PIN provvisorio deve avere da 4 a 6 cifre.'; return; }
     await Api.staffAdd({nome,matricola:mat,pin,ruolo});
-    render(); toast(nome+' aggiunto.');
+    render(); toast(nome+' aggiunto con obbligo di cambio PIN al primo accesso.');
   },
   async pinSave(f){
     const id=f.dataset.id, pin=val('pn-pin'); if(!/^\d{4,6}$/.test(pin)){ $('#pn-err').textContent='Il PIN deve avere da 4 a 6 cifre.'; return; }
-    await Api.staffPin(id,pin); S.pinFor=null; render(); toast('PIN aggiornato.');
+    await Api.staffPin(id,pin); S.pinFor=null; render(); toast('PIN provvisorio reimpostato.');
   },
   async qrMake(){ const u=val('qr-url'); if(!/^https?:\/\/\S+$/i.test(u)){ toast('Inserisci un indirizzo che inizi con https://'); return; } S.qrUrl=u; if(u!==cfg().appUrl) await Api.appUrl(u); render(); },
   async resetConfirm(){
