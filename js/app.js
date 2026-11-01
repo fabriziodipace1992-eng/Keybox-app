@@ -134,7 +134,8 @@ const S={
   qrUrl:null, revealCode:false, resetStep:0, scrollTo:null,
   showMyPinModal:false,
   recoveryFlow:null,
-  assocLottoFarmacoId:null
+  assocLottoFarmacoId:null,
+  snoozedLotti:{}
 };
 const cfg=()=>S.config||{};
 const farmaciTutti=()=>(S.config&&S.config.farmaci)||DEFAULT_FARMACI;
@@ -222,7 +223,7 @@ async function patchEvent(evt,patch){
   const items={}; items[evt.id]=patch;
   await Store.merge('log/'+(evt.day||dayKey(evt.ts)),{items});
 }
-const TYPE={chiave_presa:'Chiave presa',chiave_riposta:'Chiave riposta',chiave_passata:'Passaggio della chiave',prelievo:'Prelievo',carico:'Carico dalla farmacia',rettifica:'Rettifica giacenza',codice_cambiato:'Codice keybox cambiato',accesso_negato:'Accesso negato',personale_rimosso:'Personale eliminato',sicurezza_richiesta_otp:'Richiesta recupero PIN',sicurezza_pin_ripristinato:'PIN ripristinato con OTP',censimento_lotto:'Censimento lotto iniziale'};
+const TYPE={chiave_presa:'Chiave presa',chiave_riposta:'Chiave riposta',chiave_passata:'Passaggio della chiave',prelievo:'Prelievo',carico:'Carico dalla farmacia',rettifica:'Rettifica giacenza',codice_cambiato:'Codice keybox cambiato',accesso_negato:'Accesso negato',personale_rimosso:'Personale eliminato',sicurezza_richiesta_otp:'Richiesta recupero PIN',sicurezza_pin_ripristinato:'PIN ripristinato con OTP',censimento_lotto:'Censimento lotto iniziale',gestione_scadenza:'Presa visione/posticipo scadenza'};
 const MOTIVO={somministrazione:'Somministrazione',rottura:'Fiala rotta o caduta',altro:'Altro'};
 function deltaText(delta,sign){
   return Object.keys(delta||{}).map(k=>{ const n=delta[k]; return fById(k).nome+' '+(sign?(n>0?'+':'')+n:fiale(Math.abs(n))); }).join(', ');
@@ -235,6 +236,7 @@ function detailText(e,short){
     case 'carico': return [deltaText(e.delta,true),e.riferimento].filter(Boolean).join(' · ');
     case 'rettifica': return farmaciTutti().filter(f=>e.da&&e.a&&e.da[f.id]!==e.a[f.id]).map(f=>f.nome+' '+e.da[f.id]+' → '+e.a[f.id]).join(', ')+(e.motivo?' · '+e.motivo:'');
     case 'censimento_lotto': return (e.nota||'');
+    case 'gestione_scadenza': return (e.nota||'');
     case 'chiave_riposta': return (typeof e.durataMin==='number'?'Fuori per '+e.durataMin+' min':'')+(e.registrataDaAltri?' · presa da '+(e.presaDaNome||'?'):'');
     case 'chiave_passata': return 'Da '+(e.daNome||'?')+' a '+(e.byName||'?');
     case 'accesso_negato': return 'Matricola inserita: '+(e.matricola||'?');
@@ -278,7 +280,7 @@ function rowHTML(e){
     <div style="flex:1;">
       <div class="row-t" style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;">
         <span>${esc(title)}</span>
-        <span style="font-size:12px;font-weight:600;color:var(--c-primary,#0D6A62);background:rgba(13,106,98,0.14);padding:2px 8px;border-radius:4px;white-space:nowrap;">👤 ${esc(operatore)}</span>
+        <span style="font-size:12px;font-weight:600;color:var(--accent,#0D6A62);background:var(--accent-soft,rgba(13,106,98,0.14));padding:2px 8px;border-radius:4px;white-space:nowrap;">👤 ${esc(operatore)}</span>
       </div>
       ${dettaglio ? `<div class="row-s" style="margin-top:2px;">${esc(dettaglio)}</div>` : ''}
       ${meta.length ? `<div class="row-meta" style="margin-top:4px;">${meta.join('')}</div>` : ''}
@@ -313,19 +315,41 @@ function alerts(){
   (S.lotti || []).filter(l => ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0).forEach(l => {
     const expTs = parseScadenza(l.scadenza);
     const rimaste = l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste;
+    const snoozeUntil = S.snoozedLotti[l.id] || 0;
+    
+    if(snoozeUntil && now < snoozeUntil) return;
+
     if(expTs){
       const diffDays = Math.ceil((expTs - now) / 86400000);
       const f = fById(l.farmacoId || l.farmaco_id);
       if(diffDays <= 0){
-        out.push({sev:'crit', t:`SCADUTO: ${f.nome} · Lotto ${l.lotto}`, s:`Scaduto da ${Math.abs(diffDays)} giorni. Rimanenza: ${fiale(rimaste)}. Non somministrare e avviare reso farmacia.`, acts:[]});
+        out.push({
+          id: 'exp_'+l.id,
+          lottoId: l.id,
+          sev:'crit', 
+          t:`SCADUTO: ${f.nome} · Lotto ${l.lotto}`, 
+          s:`Scaduto da ${Math.abs(diffDays)} giorni (${l.scadenza}). Rimanenza: ${fiale(rimaste)}. Bloccare l'uso e avviare reso farmacia.`, 
+          acts:[['Presa visione / Avvia reso', 'ackLottoExp']]
+        });
       } else if(diffDays <= 30){
-        out.push({sev:'warn', t:`In scadenza: ${f.nome} · Lotto ${l.lotto}`, s:`Scade tra ${diffDays} giorni (${l.scadenza}). In cassaforte: ${fiale(rimaste)}. Priorità prelievo FEFO attiva.`, acts:[]});
+        out.push({
+          id: 'exp_'+l.id,
+          lottoId: l.id,
+          sev:'warn', 
+          t:`In scadenza: ${f.nome} · Lotto ${l.lotto}`, 
+          s:`Scade tra ${diffDays} giorni (${l.scadenza}). In cassaforte: ${fiale(rimaste)}. Priorità prelievo FEFO attiva.`, 
+          acts:[
+            ['Presa visione', 'ackLottoExp'],
+            ['Postponi di 7 gg', 'snoozeLotto7'],
+            ['Postponi di 15 gg', 'snoozeLotto15']
+          ]
+        });
       }
     }
   });
 
   S.events.filter(e=>e.type==='prelievo'&&e.motivo==='rottura'&&!e.gestito&&now-e.ts<30*86400000).forEach(e=>{
-    out.push({sev:'warn',t:'Fiala rotta o caduta · '+deltaText(e.delta),s:hhmm(e.ts)+' del '+ddmm(e.ts)+' · '+e.byName+(e.note?' · '+e.note:''),evt:e,acts:[['Presa visione','ackOpen']]});
+    out.push({id:'ack_'+e.id,sev:'warn',t:'Fiala rotta o caduta · '+deltaText(e.delta),s:hhmm(e.ts)+' del '+ddmm(e.ts)+' · '+e.byName+(e.note?' · '+e.note:''),evt:e,acts:[['Presa visione','ackOpen']]});
   });
   
   farmaci().forEach(f=>{ if((st[f.id]||0)<=(f.soglia||0)) out.push({sev:'warn',t:'Scorta di '+f.nome+' sotto soglia',s:'In cassetta '+fiale(st[f.id]||0)+', soglia di riordino '+f.soglia+'.',acts:[['Registra carico','gotoCarico']]}); });
@@ -334,6 +358,7 @@ function alerts(){
   
   S.events.filter(e=>e.type==='prelievo'&&!e.trascritto&&now-e.ts>60*60000&&now-e.ts<30*86400000).forEach(e=>{
     out.push({
+      id:'tras_'+e.id,
       sev:'warn',
       t:'Da trascrivere · '+deltaText(e.delta),
       s:hhmm(e.ts)+' del '+ddmm(e.ts)+' · '+e.byName+(e.paziente?' · Paziente: '+e.paziente:''),
@@ -502,7 +527,7 @@ function viewAssocLottoModal(){
 
     <div class="status info" style="margin-bottom:12px;">
       <span class="ico">${IC.info}</span>
-      <div>Giacenza registrata: <b>${fiale(giacenzaAttuale)}</b> (di cui <b>${fiale(fialeGiaLottizzate)}</b> con lotto). Fiale residue da censire: <b>${fiale(fialeDaLottizzare)}</b>.</div>
+      <div>Giacenza: <b>${fiale(giacenzaAttuale)}</b> (di cui <b>${fiale(fialeGiaLottizzate)}</b> con lotto). Da censire: <b>${fiale(fialeDaLottizzare)}</b>.</div>
     </div>
 
     <form data-submit="salvaAssocLotto" novalidate>
@@ -617,15 +642,20 @@ function drugRow(f,n){
   const unitaScatola = (nextLotto && (nextLotto.unitaPerScatola || nextLotto.unita_per_scatola)) || f.unitaPerScatola || 5;
   const rimasteNext = nextLotto ? (nextLotto.fialeRimaste != null ? nextLotto.fialeRimaste : nextLotto.fiale_rimaste) : 0;
   
-  return `<div class="drug d-${f.tema}" style="display:flex;align-items:center;justify-content:space-between;gap:12px;position:relative;box-sizing:border-box;overflow:hidden;">
+  return `<div class="drug d-${f.tema}">
     <span class="badge"><b>${esc(f.sigla)}</b></span>
-    <div class="drug-main" style="flex:1 1 auto;min-width:0;">
+    <div class="drug-main">
       <div class="drug-name">${esc(f.nome.toUpperCase())} <span class="salt">${esc(f.sale||'')}</span></div>
       <div class="drug-dose">${esc(f.dosaggio)} · ${esc(f.forma||'fiala')} · scatole da ${f.unitaPerScatola||5}</div>
-      ${nextLotto ? `<div class="row-meta" style="margin-top:4px;"><span class="pill info" style="white-space:normal;display:inline-block;line-height:1.3;">Prossimo FEFO: <b>${esc(nextLotto.lotto)}</b> (Scad. ${esc(nextLotto.scadenza)}) · ${rimasteNext} di ${unitaScatola} rimaste</span></div>` : (n>0 ? `<div class="row-meta" style="margin-top:4px;"><span class="pill warn">Nessun lotto associato</span></div>` : '')}
+      ${nextLotto ? `
+        <div class="row-meta" style="margin-top:4px;">
+          <span class="pill info" style="white-space:normal;display:inline-block;line-height:1.35;">
+            Prossimo FEFO: <b>${esc(nextLotto.lotto)}</b> (Scad. ${esc(nextLotto.scadenza)}) · <b>${rimasteNext} fiale rimaste</b> (Scatole da ${unitaScatola})
+          </span>
+        </div>` : (n>0 ? `<div class="row-meta" style="margin-top:4px;"><span class="pill warn">Nessun lotto associato</span></div>` : '')}
       ${low ? '<div class="row-meta"><span class="pill warn">Sotto soglia ('+f.soglia+')</span></div>' : ''}
     </div>
-    <div class="qty" style="flex:0 0 auto;position:static;text-align:right;margin-left:auto;">${n}<small>${n===1?'fiala':'fiale'}</small></div>
+    <div class="qty">${n}<small>${n===1?'fiala':'fiale'}</small></div>
   </div>`;
 }
 
@@ -684,8 +714,8 @@ function viewPrelievo(){
           <div class="verify-top"><span class="badge"><b>${esc(f.sigla)}</b></span><div><div class="verify-name">${esc(f.nome.toUpperCase())}</div><div class="verify-salt">${esc(f.sale||'')}</div></div></div>
           <div class="verify-dose">${esc(f.dosaggio)}</div>
           
-          <div class="subform" style="margin-block:10px;padding:10px;border-left:4px solid var(--c-primary,#0D6A62);">
-            <div style="font-weight:700;font-size:13px;margin-bottom:6px;color:var(--c-primary,#0D6A62);">📦 Istruzioni di prelievo FEFO:</div>
+          <div class="subform" style="margin-block:10px;padding:10px;border-left:4px solid var(--accent,#0D6A62);">
+            <div style="font-weight:700;font-size:13px;margin-bottom:6px;color:var(--accent,#0D6A62);">📦 Istruzioni di prelievo FEFO:</div>
             ${plan.length ? plan.map(p => `
               <div style="font-size:14px;display:flex;justify-content:space-between;align-items:center;margin-block:6px;gap:8px;flex-wrap:wrap;">
                 <span>Preleva <b>${fiale(p.take)}</b> da Lotto <b class="mono">${esc(p.lotto)}</b> (Scad. ${esc(p.scadenza)}) · Scatola da ${p.unitaPerScatola}</span>
@@ -762,7 +792,7 @@ function formCarico(){
     <p class="fine">Specifica numero di scatole, quante fiale contiene ogni scatola, lotto e scadenza. Il prelievo scalerà automaticamente per scadenza (FEFO).</p>
     
     ${farmaci().map(f=>`
-      <div class="subform" style="border-left:4px solid var(--c-primary,#0D6A62);margin-bottom:12px;padding:10px;">
+      <div class="subform" style="border-left:4px solid var(--accent,#0D6A62);margin-bottom:12px;padding:10px;">
         <div style="font-weight:700;margin-bottom:6px;">${esc(f.nome)} ${esc(f.dosaggio)}</div>
         <div class="two">
           <label class="field"><span>Numero di scatole</span><input id="ca-scat-${f.id}" type="number" inputmode="numeric" min="0" max="99" value="0" data-calc-carico="${f.id}"></label>
@@ -772,7 +802,7 @@ function formCarico(){
           <label class="field"><span>Numero di Lotto</span><input id="ca-lot-${f.id}" type="text" maxlength="25" placeholder="Es. B10492" style="text-transform:uppercase;"></label>
           <label class="field"><span>Data di scadenza (Mese / Anno)</span><input id="ca-exp-${f.id}" type="month"></label>
         </div>
-        <div id="ca-tot-preview-${f.id}" class="row-s" style="font-weight:600;color:var(--c-primary,#0D6A62);">0 fiale totali da caricare</div>
+        <div id="ca-tot-preview-${f.id}" class="row-s" style="font-weight:600;color:var(--accent,#0D6A62);">0 fiale totali da caricare</div>
       </div>
     `).join('')}
     
@@ -861,14 +891,37 @@ function tabStato(){
 function tabSegnalazioni(){
   const al=alerts();
   if(!al.length) return `<div class="empty"><h2>Nessuna segnalazione aperta</h2><p>Chiave non restituita, lotti in scadenza, fiale rotte, scorte basse e codice da cambiare compaiono qui.</p></div>`;
-  return `<p class="fine">Le segnalazioni cliniche e di sicurezza consentono il controllo tempestivo del reparto.</p><div class="alerts">${al.map((a,i)=>{
+  
+  return `<p class="fine">Le segnalazioni cliniche e di sicurezza consentono il controllo tempestivo del reparto.</p>
+  <div class="alerts">${al.map((a)=>{
     const ico=a.sev==='crit'?IC.alert:a.sev==='warn'?IC.alert:IC.info;
-    const ackForm=a.evt&&S.ackId===a.evt.id?`<form class="subform" data-submit="ackSave" data-id="${a.evt.id}" novalidate><label class="field"><span>Nota di presa visione</span><textarea id="ack-note" maxlength="300" placeholder="Es. verificato con l\u2019infermiere, fiale sostituite correttamente"></textarea></label><div class="btns"><button class="btn btn-primary btn-sm">Conferma presa visione</button><button type="button" class="btn btn-quiet btn-sm" data-act="ackCancel">Annulla</button></div></form>`:'';
-    return `<div class="alert ${a.sev}"><span class="ico">${ico}</span><div class="alert-t">${esc(a.t)}</div><div class="alert-s">${esc(a.s)}</div>${a.acts.length&&!ackForm?`<div class="alert-acts">${a.acts.map(([l,act])=>`<button class="btn btn-secondary btn-sm" data-act="${act}" data-id="${a.evt?a.evt.id:''}">${l}</button>`).join('')}</div>`:''}${ackForm}</div>`;
+    const isAckThis = (S.ackId === a.id) || (a.evt && S.ackId === a.evt.id);
+    
+    const ackForm = isAckThis ? `
+      <form class="subform" data-submit="ackSaveGeneric" data-alert-id="${esc(a.id)}" data-lotto-id="${esc(a.lottoId||'')}" data-evt-id="${esc(a.evt?a.evt.id:'')}" novalidate>
+        <label class="field"><span>Nota di presa visione</span>
+          <textarea id="ack-note" maxlength="300" placeholder="Es. verificato con l'équipe, consumo programmato prima del termine"></textarea>
+        </label>
+        <div class="btns">
+          <button class="btn btn-primary btn-sm">Conferma presa visione</button>
+          <button type="button" class="btn btn-quiet btn-sm" data-act="ackCancel">Annulla</button>
+        </div>
+      </form>` : '';
+
+    return `<div class="alert ${a.sev}">
+      <span class="ico">${ico}</span>
+      <div class="alert-t">${esc(a.t)}</div>
+      <div class="alert-s">${esc(a.s)}</div>
+      ${a.acts && a.acts.length && !ackForm ? `
+        <div class="alert-acts">
+          ${a.acts.map(([l, act]) => `<button class="btn btn-secondary btn-sm" data-act="${act}" data-id="${esc(a.id)}" data-lotto-id="${esc(a.lottoId||'')}">${l}</button>`).join('')}
+        </div>` : ''}
+      ${ackForm}
+    </div>`;
   }).join('')}</div>`;
 }
 
-const FILTERS=[['tutti','Tutti',()=>true],['chiave','Chiave',e=>/^chiave/.test(e.type)],['prelievo','Prelievi',e=>e.type==='prelievo'],['datrascrivere','Da trascrivere',e=>e.type==='prelievo'&&!e.trascritto],['giacenze','Carichi e rettifiche',e=>e.type==='carico'||e.type==='rettifica'||e.type==='censimento_lotto'],['sicurezza','Codice, accessi e personale',e=>e.type==='codice_cambiato'||e.type==='accesso_negato'||e.type==='personale_rimosso'||/^sicurezza/.test(e.type)]];
+const FILTERS=[['tutti','Tutti',()=>true],['chiave','Chiave',e=>/^chiave/.test(e.type)],['prelievo','Prelievi',e=>e.type==='prelievo'],['datrascrivere','Da trascrivere',e=>e.type==='prelievo'&&!e.trascritto],['giacenze','Carichi e rettifiche',e=>e.type==='carico'||e.type==='rettifica'||e.type==='censimento_lotto'],['sicurezza','Codice, accessi e personale',e=>e.type==='codice_cambiato'||e.type==='accesso_negato'||e.type==='personale_rimosso'||/^sicurezza/.test(e.type)||e.type==='gestione_scadenza']];
 
 function tabRegistro(){
   const flt=(FILTERS.find(f=>f[0]===S.filter)||FILTERS[0])[2];
@@ -955,7 +1008,7 @@ function tabImpostazioni(){
       <p class="fine">Modifica nome, dosaggio, formato confezione standard e soglia di riordino. Se un farmaco non è più in uso, toccando "Archivia" non comparirà più nei prelievi ma resterà nello storico.</p>
       <form class="block" data-submit="farmaciSave" novalidate>
         ${farmaciTutti().map(f=>`
-          <div class="subform" style="border-left:4px solid var(--c-primary,#0D6A62);margin-bottom:12px;padding:12px;">
+          <div class="subform" style="border-left:4px solid var(--accent,#0D6A62);margin-bottom:12px;padding:12px;">
             <div style="display:flex;align-items:center;justify-content:space-between;width:100%;margin-bottom:8px;">
               <div style="display:flex;align-items:center;gap:8px;">
                 <span class="badge d-${f.tema}"><b>${esc(f.sigla)}</b></span>
@@ -1120,7 +1173,6 @@ const LocalApi={
         delta[f.id] = -q;
         after[f.id] = (st[f.id] || 0) - q;
         
-        // Calcola e applica la suddivisione FEFO sui lotti
         const plan = getFefoPlan(f.id, q);
         plan.forEach(p => {
           if(p.lottoId){
@@ -1258,13 +1310,12 @@ const RemoteApi={
   markKeyIn(){ return RemoteApi.act('return_key'); },
   receiveKey(){ return RemoteApi.act('receive_key'); },
   prelievo(o){ 
-    // Calcola lotti plan e invia anche lottiScalati al backend
     const planMap = {};
     for(const f of farmaci()){
       const q = o.qty[f.id] || 0;
       if(q > 0) planMap[f.id] = getFefoPlan(f.id, q);
     }
-    return RemoteApi.act('prelievo',{qty:o.qty, paciente:o.paziente, motivo:o.motivo, note:o.note, fefo_plan:planMap}); 
+    return RemoteApi.act('prelievo',{qty:o.qty, paziente:o.paziente, motivo:o.motivo, note:o.note, fefo_plan:planMap}); 
   },
   async transcribed(e){ await RemoteApi.act('transcribed',{id:e.id}); return S.events.find(x=>x.id===e.id)||Object.assign({},e,{trascritto:true,trascrittoTs:Date.now()}); },
   carico(delta,rif,lotti){ return RemoteApi.act('carico',{delta,riferimento:rif,lotti}); },
@@ -1397,6 +1448,29 @@ const A={
     toast('Stato farmaco aggiornato.');
   },
   ackOpen(d){ S.ackId=d.id; render(); const t=$('#ack-note'); if(t) t.focus(); },
+  ackLottoExp(d){
+    S.ackId = d.id;
+    render();
+    const t = $('#ack-note');
+    if(t) {
+      t.value = 'Presa visione della scadenza. Monitoraggio attivo in reparto.';
+      t.focus();
+    }
+  },
+  snoozeLotto7(d){
+    const lottoId = d.lottoId || d.id.replace('exp_','');
+    S.snoozedLotti[lottoId] = Date.now() + (7 * 86400000);
+    addEvent('gestione_scadenza', { nota: 'Avviso scadenza lotto posticipato di 7 giorni' }).catch(()=>{});
+    render();
+    toast('Segnalazione posticipata di 7 giorni.');
+  },
+  snoozeLotto15(d){
+    const lottoId = d.lottoId || d.id.replace('exp_','');
+    S.snoozedLotti[lottoId] = Date.now() + (15 * 86400000);
+    addEvent('gestione_scadenza', { nota: 'Avviso scadenza lotto posticipato di 15 giorni' }).catch(()=>{});
+    render();
+    toast('Segnalazione posticipata di 15 giorni.');
+  },
   ackCancel(){ S.ackId=null; render(); },
   gotoCarico(){ S.tab='stato'; S.coordForm='carico'; S.scrollTo='sez-giacenze'; render(); },
   gotoCode(){ S.view='coord'; S.tab='impostazioni'; S.codeFlow={step:0}; S.scrollTo='sez-codice'; render(); },
@@ -1608,10 +1682,25 @@ const SUBMIT={
     await Api.rettifica(a,mot);
     S.coordForm=null; S.rettPrefill=null; render(); toast('Giacenza rettificata.');
   },
-  async ackSave(f){
-    const e=S.events.find(x=>x.id===f.dataset.id); if(!e) return;
-    await Api.ack(e,val('ack-note'));
-    S.ackId=null; render(); toast('Presa visione registrata.');
+  async ackSaveGeneric(f){
+    const lottoId = f.dataset.lottoId;
+    const evtId = f.dataset.evtId;
+    const note = val('ack-note');
+
+    if(lottoId){
+      S.snoozedLotti[lottoId] = Date.now() + (365 * 86400000);
+      await addEvent('gestione_scadenza', {
+        lottoId,
+        nota: `Presa visione scadenza lotto: ${note || 'Nessuna nota aggiuntiva'}`
+      });
+    } else if(evtId){
+      const e = S.events.find(x => x.id === evtId);
+      if(e) await Api.ack(e, note);
+    }
+
+    S.ackId = null;
+    render();
+    toast('Presa visione registrata nel log del reparto.');
   },
   async codeManual(){ const c=val('cm-code'); const w=isWeak(c); if(w){ $('#cm-err').textContent=w; return; } S.codeFlow={step:1,code:c}; render(); },
   async regoleSave(){
@@ -1758,6 +1847,7 @@ document.addEventListener('pointermove',e=>{
     if(Math.abs(dx)>8&&Math.abs(dx)>Math.abs(dy)*1.2){ SW.drag=true; SW.w.classList.add('drag'); SW.el.style.transition='none'; try{ SW.el.setPointerCapture(e.pointerId); }catch(_){} }
     else { if(Math.abs(dy)>10) SW.el=null; return; }
   }
+  SW.el=row;
   SW.el.style.transform='translateX('+Math.max(-DEL_W-28,Math.min(0,SW.base+dx))+'px)';
 });
 function endSwipe(e){
