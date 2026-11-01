@@ -125,7 +125,7 @@ const DEFAULT_FARMACI=[
 ];
 const S={
   loaded:false, loadError:false, staffLoaded:false, readOnly:false,
-  config:null, base:null, key:null, staff:{}, events:[],
+  config:null, base:null, key:null, staff:{}, events:[], lotti:[],
   meId:null, meUser:null, view:'home', tab:'stato', flow:null,
   codeShownUntil:0, confirmTake:false,
   loginErr:'', fails:0, lockUntil:0, lastActivity:Date.now(),
@@ -156,6 +156,34 @@ function codePill(){
   return `<span class="pill ok">In regola · ${d===0?'oggi':d===1?'1 giorno':d+' giorni'}</span>`;
 }
 
+function parseScadenza(str){
+  if(!str) return null;
+  const parts = str.split('-').map(Number);
+  if(parts.length < 2) return null;
+  return new Date(parts[0], parts[1], 0, 23, 59, 59).getTime();
+}
+
+function getFefoPlan(farmacoId, qty){
+  const lottiDisponibili = (S.lotti || [])
+    .filter(l => l.farmacoId === farmacoId && (l.fialeRimaste || 0) > 0)
+    .sort((a,b) => String(a.scadenza).localeCompare(String(b.scadenza)) || a.caricatoTs - b.caricatoTs);
+
+  let need = qty;
+  const plan = [];
+  for(const l of lottiDisponibili){
+    if(need <= 0) break;
+    const take = Math.min(need, l.fialeRimaste);
+    plan.push({
+      lotto: l.lotto,
+      scadenza: l.scadenza,
+      take: take,
+      fialeRimasteNelLotto: l.fialeRimaste - take
+    });
+    need -= take;
+  }
+  return plan;
+}
+
 async function addEvent(type,payload){
   const ts=Date.now(); const m=me()||{};
   const evt=Object.assign({id:uid(),ts,day:dayKey(ts),type,by:S.meId||'',byName:m.nome||''},payload||{});
@@ -174,7 +202,9 @@ function deltaText(delta,sign){
 }
 function detailText(e,short){
   switch(e.type){
-    case 'prelievo': return [short?'':deltaText(e.delta),e.paziente,MOTIVO[e.motivo]||'',e.note].filter(Boolean).join(' · ');
+    case 'prelievo': 
+      const lottiInfo = (e.lottiScalati && e.lottiScalati.length) ? ' (Lotti: ' + e.lottiScalati.map(x=>x.lotto).join(', ') + ')' : '';
+      return [short?'':deltaText(e.delta),e.paziente,MOTIVO[e.motivo]||'',e.note].filter(Boolean).join(' · ') + lottiInfo;
     case 'carico': return [deltaText(e.delta,true),e.riferimento].filter(Boolean).join(' · ');
     case 'rettifica': return farmaciTutti().filter(f=>e.da&&e.a&&e.da[f.id]!==e.a[f.id]).map(f=>f.nome+' '+e.da[f.id]+' → '+e.a[f.id]).join(', ')+(e.motivo?' · '+e.motivo:'');
     case 'chiave_riposta': return (typeof e.durataMin==='number'?'Fuori per '+e.durataMin+' min':'')+(e.registrataDaAltri?' · presa da '+(e.presaDaNome||'?'):'');
@@ -189,15 +219,9 @@ function detailText(e,short){
 function resolveOperator(e){
   const staffMember = e.by ? S.staff[e.by] : null;
   const nome = (staffMember && staffMember.nome) || e.byName;
-  if(nome && e.by){
-    return `${nome} (matr. ${e.by})`;
-  }
-  if(nome){
-    return nome;
-  }
-  if(e.by){
-    return `Matr. ${e.by}`;
-  }
+  if(nome && e.by) return `${nome} (matr. ${e.by})`;
+  if(nome) return nome;
+  if(e.by) return `Matr. ${e.by}`;
   return 'Sistema';
 }
 
@@ -258,6 +282,20 @@ function alerts(){
   const k=S.key;
   if(k&&k.status==='out'&&mins(k.since)>tout) out.push({sev:'crit',t:'Chiave fuori dalla keybox da '+mins(k.since)+' minuti',s:'Presa da '+(k.byName||'?')+' alle '+hhmm(k.since)+'. Limite impostato: '+tout+' min.',acts:[['Registra come riposta','markKeyIn']]});
   
+  // Alert Scadenze Farmaci entro 30 giorni o scaduti
+  (S.lotti || []).filter(l => (l.fialeRimaste || 0) > 0).forEach(l => {
+    const expTs = parseScadenza(l.scadenza);
+    if(expTs){
+      const diffDays = Math.ceil((expTs - now) / 86400000);
+      const f = fById(l.farmacoId);
+      if(diffDays <= 0){
+        out.push({sev:'crit', t:`SCADUTO: ${f.nome} · Lotto ${l.lotto}`, s:`Scaduto da ${Math.abs(diffDays)} giorni. Rimanenza: ${fiale(l.fialeRimaste)}. Non somministrare e avviare reso farmacia.`, acts:[]});
+      } else if(diffDays <= 30){
+        out.push({sev:'warn', t:`In scadenza: ${f.nome} · Lotto ${l.lotto}`, s:`Scade tra ${diffDays} giorni (${l.scadenza}). In cassaforte: ${fiale(l.fialeRimaste)}. Priorità prelievo FEFO attiva.`, acts:[]});
+      }
+    }
+  });
+
   S.events.filter(e=>e.type==='prelievo'&&e.motivo==='rottura'&&!e.gestito&&now-e.ts<30*86400000).forEach(e=>{
     out.push({sev:'warn',t:'Fiala rotta o caduta · '+deltaText(e.delta),s:hhmm(e.ts)+' del '+ddmm(e.ts)+' · '+e.byName+(e.note?' · '+e.note:''),evt:e,acts:[['Presa visione','ackOpen']]});
   });
@@ -494,7 +532,19 @@ function codePanel(){
 
 function drugRow(f,n){
   const low=n<=(f.soglia||0);
-  return `<div class="drug d-${f.tema}"><span class="badge"><b>${esc(f.sigla)}</b></span><div class="drug-main"><div class="drug-name">${esc(f.nome.toUpperCase())} <span class="salt">${esc(f.sale||'')}</span></div><div class="drug-dose">${esc(f.dosaggio)} · ${esc(f.forma||'fiala')}</div>${low?'<div class="row-meta"><span class="pill warn">Sotto soglia ('+f.soglia+')</span></div>':''}</div><div class="qty">${n}<small>${n===1?'fiala':'fiale'}</small></div></div>`;
+  const lottiFarmaco = (S.lotti || []).filter(l => l.farmacoId === f.id && l.fialeRimaste > 0).sort((a,b)=>String(a.scadenza).localeCompare(String(b.scadenza)));
+  const nextLotto = lottiFarmaco[0];
+  
+  return `<div class="drug d-${f.tema}">
+    <span class="badge"><b>${esc(f.sigla)}</b></span>
+    <div class="drug-main">
+      <div class="drug-name">${esc(f.nome.toUpperCase())} <span class="salt">${esc(f.sale||'')}</span></div>
+      <div class="drug-dose">${esc(f.dosaggio)} · ${esc(f.forma||'fiala')}</div>
+      ${nextLotto ? `<div class="row-meta" style="margin-top:4px;"><span class="pill info">Prossimo lotto: <b>${esc(nextLotto.lotto)}</b> (Scad. ${esc(nextLotto.scadenza)})</span></div>` : ''}
+      ${low ? '<div class="row-meta"><span class="pill warn">Sotto soglia ('+f.soglia+')</span></div>' : ''}
+    </div>
+    <div class="qty">${n}<small>${n===1?'fiala':'fiale'}</small></div>
+  </div>`;
 }
 
 function viewHome(){
@@ -516,10 +566,23 @@ function viewPrelievo(){
   if(F.step===1){
     return `${flowHead(1,3,'Passo 1 di 3')}
       <h1>Cosa prelevi?</h1>
-      ${farmaci().map(f=>{ const q=F.qty[f.id]||0, have=st[f.id]||0; return `<div class="pick d-${f.tema}${q>0?' on':''}">
-        <div class="pick-h"><span class="badge"><b>${esc(f.sigla)}</b></span><div class="grow"><div class="drug-name">${esc(f.nome.toUpperCase())} <span class="salt">${esc(f.sale||'')}</span></div><div class="drug-dose">${esc(f.dosaggio)} · in cassetta ${fiale(have)}</div></div></div>
-        <div class="stepper"><button class="sbtn" data-act="qty" data-id="${f.id}" data-d="-1" aria-label="Una fiala in meno di ${esc(f.nome)}" ${q<=0?'disabled':''}>−</button><div class="val" aria-live="polite">${q}<small>${q===1?'fiala':'fiale'}</small></div><button class="sbtn" data-act="qty" data-id="${f.id}" data-d="1" aria-label="Una fiala in più di ${esc(f.nome)}" ${q>=have?'disabled':''}>+</button></div>
-      </div>`; }).join('')}
+      ${farmaci().map(f=>{ 
+        const q=F.qty[f.id]||0, have=st[f.id]||0; 
+        return `<div class="pick d-${f.tema}${q>0?' on':''}">
+          <div class="pick-h">
+            <span class="badge"><b>${esc(f.sigla)}</b></span>
+            <div class="grow">
+              <div class="drug-name">${esc(f.nome.toUpperCase())} <span class="salt">${esc(f.sale||'')}</span></div>
+              <div class="drug-dose">${esc(f.dosaggio)} · in cassetta ${fiale(have)}</div>
+            </div>
+          </div>
+          <div class="stepper">
+            <button class="sbtn" data-act="qty" data-id="${f.id}" data-d="-1" aria-label="Una fiala in meno di ${esc(f.nome)}" ${q<=0?'disabled':''}>−</button>
+            <div class="val" aria-live="polite">${q}<small>${q===1?'fiala':'fiale'}</small></div>
+            <button class="sbtn" data-act="qty" data-id="${f.id}" data-d="1" aria-label="Una fiala in più di ${esc(f.nome)}" ${q>=have?'disabled':''}>+</button>
+          </div>
+        </div>`; 
+      }).join('')}
       <label class="field"><span>Paziente</span><input id="p-paz" type="text" maxlength="40" data-bind="flow.paziente" value="${esc(F.paziente)}" placeholder="Es. letto 12 o codice ricovero"><small>Non scrivere nome e cognome: il nome va solo sul registro ufficiale.</small></label>
       <div class="field"><span>Motivo</span><div class="seg">${Object.keys(MOTIVO).map(m=>`<button type="button" data-act="setMotivo" data-v="${m}" aria-pressed="${F.motivo===m}">${MOTIVO[m]}</button>`).join('')}</div></div>
       ${F.motivo!=='somministrazione'?`<label class="field"><span>Cosa è successo</span><textarea id="p-note" maxlength="300" data-bind="flow.note" placeholder="${F.motivo==='rottura'?'Es. fiala caduta durante la preparazione, vetri nel contenitore taglienti':'Descrivi il motivo del prelievo'}">${esc(F.note)}</textarea><small>Il coordinatore riceve una segnalazione.</small></label>`:''}
@@ -531,13 +594,28 @@ function viewPrelievo(){
     const sel=farmaci().filter(f=>(F.qty[f.id]||0)>0);
     return `${flowHead(2,3,'Passo 2 di 3')}
       <h1>Controlla l’etichetta della fiala</h1>
-      <p class="lead">Confronta nome e dosaggio con la fiala che hai in mano, prima di confermare.</p>
-      ${sel.map(f=>{ const q=F.qty[f.id]; return `<div class="verify d-${f.tema}">
-        <div class="verify-top"><span class="badge"><b>${esc(f.sigla)}</b></span><div><div class="verify-name">${esc(f.nome.toUpperCase())}</div><div class="verify-salt">${esc(f.sale||'')}</div></div></div>
-        <div class="verify-dose">${esc(f.dosaggio)}</div>
-        <div class="verify-qty"><div><span>Prelevi</span><b>${fiale(q)}</b></div><div><span>Restano in cassetta</span><b>${fiale((st[f.id]||0)-q)}</b></div></div>
-        <label class="check"><input type="checkbox" data-verify="${f.id}" ${F.verified[f.id]?'checked':''}> Ho controllato nome e dosaggio sulla fiala</label>
-      </div>`; }).join('')}
+      <p class="lead">Confronta nome, dosaggio e il lotto consigliato secondo la scadenza (FEFO) prima di confermare.</p>
+      ${sel.map(f=>{ 
+        const q=F.qty[f.id];
+        const plan = getFefoPlan(f.id, q);
+        return `<div class="verify d-${f.tema}">
+          <div class="verify-top"><span class="badge"><b>${esc(f.sigla)}</b></span><div><div class="verify-name">${esc(f.nome.toUpperCase())}</div><div class="verify-salt">${esc(f.sale||'')}</div></div></div>
+          <div class="verify-dose">${esc(f.dosaggio)}</div>
+          
+          <div class="subform" style="margin-block:10px;padding:10px;border-left:4px solid var(--c-primary,#0D6A62);">
+            <div style="font-weight:700;font-size:13px;margin-bottom:4px;color:var(--c-primary,#0D6A62);">📦 Istruzioni di prelievo scatola (FEFO):</div>
+            ${plan.length ? plan.map(p => `
+              <div style="font-size:14px;display:flex;justify-content:space-between;align-items:center;margin-block:4px;">
+                <span>Preleva <b>${fiale(p.take)}</b> da Lotto <b class="mono">${esc(p.lotto)}</b> (Scad. ${esc(p.scadenza)})</span>
+                <span class="pill ${p.fialeRimasteNelLotto===0?'warn':'ok'}">${p.fialeRimasteNelLotto===0?'Scatola esaurita':'Restano '+p.fialeRimasteNelLotto+' fiale'}</span>
+              </div>
+            `).join('') : '<div class="muted">Nessun lotto specifico registrato per questo farmaco.</div>'}
+          </div>
+
+          <div class="verify-qty"><div><span>Prelevi</span><b>${fiale(q)}</b></div><div><span>Restano in cassetta</span><b>${fiale((st[f.id]||0)-q)}</b></div></div>
+          <label class="check"><input type="checkbox" data-verify="${f.id}" ${F.verified[f.id]?'checked':''}> Ho controllato nome, dosaggio e lotto della fiala</label>
+        </div>`; 
+      }).join('')}
       <dl class="summary"><dt>Paziente</dt><dd>${esc(F.paziente||'—')}</dd><dt>Motivo</dt><dd>${esc(MOTIVO[F.motivo])}</dd>${F.note?`<dt>Nota</dt><dd>${esc(F.note)}</dd>`:''}</dl>
       <button id="confirmBtn" class="btn btn-primary btn-lg btn-block" data-act="prelievoConfirm" ${sel.every(f=>F.verified[f.id])&&!F.busy?'':'disabled'}>Conferma il prelievo</button>
       <button class="btn btn-quiet btn-block" data-act="flowBack">Modifica</button>`;
@@ -549,8 +627,22 @@ function viewPrelievo(){
     <section class="block">
       <h2>Riga per il registro di carico e scarico</h2>
       <p class="lead">Trascrivi subito questi dati sul registro vidimato cartaceo del reparto.</p>
-      ${sel.map(id=>{ const f=fById(id); return `<div class="twin-rec d-${f.tema}"><div class="twin-h"><span class="badge"><b>${esc(f.sigla)}</b></span><b>${esc(f.nome)} ${esc(f.sale||'')}</b><span class="muted">${esc(f.dosaggio)}</span></div>
-        <dl class="twin-grid"><div><dt>Data</dt><dd>${ddmmyyyy(e.ts)}</dd></div><div><dt>Ora</dt><dd>${hhmm(e.ts)}</dd></div><div><dt>Paziente</dt><dd>${esc(e.paziente||'—')}</dd></div><div><dt>Scarico</dt><dd>${-e.delta[id]}</dd></div><div><dt>Giacenza</dt><dd>${e.giacenzaDopo?e.giacenzaDopo[id]:'—'}</dd></div></dl></div>`; }).join('')}
+      ${sel.map(id=>{ 
+        const f=fById(id);
+        const lotti = (e.lottiScalati||[]).filter(x=>x.farmacoId===id);
+        const lottiStr = lotti.length ? lotti.map(x=>x.lotto).join(', ') : '—';
+        return `<div class="twin-rec d-${f.tema}">
+          <div class="twin-h"><span class="badge"><b>${esc(f.sigla)}</b></span><b>${esc(f.nome)} ${esc(f.sale||'')}</b><span class="muted">${esc(f.dosaggio)}</span></div>
+          <dl class="twin-grid">
+            <div><dt>Data</dt><dd>${ddmmyyyy(e.ts)}</dd></div>
+            <div><dt>Ora</dt><dd>${hhmm(e.ts)}</dd></div>
+            <div><dt>Paziente</dt><dd>${esc(e.paziente||'—')}</dd></div>
+            <div><dt>Lotto</dt><dd class="mono">${esc(lottiStr)}</dd></div>
+            <div><dt>Scarico</dt><dd>${-e.delta[id]}</dd></div>
+            <div><dt>Giacenza</dt><dd>${e.giacenzaDopo?e.giacenzaDopo[id]:'—'}</dd></div>
+          </dl>
+        </div>`; 
+      }).join('')}
       
       ${!isTrascritto ? `
         <div class="status warn" style="margin-top:6px;">
@@ -581,12 +673,30 @@ function viewCoord(){
 }
 
 function formCarico(){
-  return `<form class="subform" data-submit="carico" novalidate><h3>Carico dalla farmacia</h3>
-    <div class="two">${farmaci().map(f=>`<label class="field"><span>${esc(f.nome)} · fiale ricevute</span><input id="ca-${f.id}" type="number" inputmode="numeric" min="0" max="999" value="0"></label>`).join('')}</div>
-    <label class="field"><span>Riferimento</span><input id="ca-rif" type="text" maxlength="80" placeholder="Es. richiesta n. 452 del ${ddmm(Date.now())}"></label>
+  return `<form class="subform" data-submit="carico" novalidate>
+    <h3>Carico dalla farmacia per scatole/lotti</h3>
+    <p class="fine">Registra le scatole arrivate (1 scatola = 5 fiale). Il sistema gestirà le scadenze e i prelievi con priorità FEFO.</p>
+    
+    ${farmaci().map(f=>`
+      <div class="subform" style="border-left:4px solid var(--c-primary,#0D6A62);margin-bottom:12px;padding:10px;">
+        <div style="font-weight:700;margin-bottom:6px;">${esc(f.nome)} ${esc(f.dosaggio)}</div>
+        <div class="two">
+          <label class="field"><span>Numero di scatole (da 5 fiale)</span><input id="ca-scat-${f.id}" type="number" inputmode="numeric" min="0" max="99" value="0"></label>
+          <label class="field"><span>Numero di Lotto</span><input id="ca-lot-${f.id}" type="text" maxlength="25" placeholder="Es. B10492" style="text-transform:uppercase;"></label>
+        </div>
+        <label class="field"><span>Data di scadenza (Mese / Anno)</span><input id="ca-exp-${f.id}" type="month"></label>
+      </div>
+    `).join('')}
+    
+    <label class="field"><span>Riferimento bolla / richiesta</span><input id="ca-rif" type="text" maxlength="80" placeholder="Es. Richiesta n. 452 del ${ddmm(Date.now())}"></label>
     <p class="err" id="ca-err"></p>
-    <div class="btns"><button class="btn btn-primary">Registra il carico</button><button type="button" class="btn btn-quiet" data-act="closeForm">Annulla</button></div></form>`;
+    <div class="btns">
+      <button class="btn btn-primary">Registra il carico</button>
+      <button type="button" class="btn btn-quiet" data-act="closeForm">Annulla</button>
+    </div>
+  </form>`;
 }
+
 function formRettifica(){
   const st=stock(); const pre=S.rettPrefill||st;
   return `<form class="subform" data-submit="rettifica" novalidate><h3>Rettifica della giacenza</h3>
@@ -601,23 +711,54 @@ function tabStato(){
   const c=cfg(); const st=stock();
   const today=dayKey(Date.now()); const tEv=S.events.filter(e=>dayKey(e.ts)===today);
   const tPrel={}; farmaci().forEach(f=>tPrel[f.id]=0); tEv.filter(e=>e.type==='prelievo').forEach(e=>Object.keys(e.delta||{}).forEach(k=>tPrel[k]-=e.delta[k]));
+  
+  const lottiAttivi = (S.lotti || []).filter(l => l.fialeRimaste > 0).sort((a,b)=>String(a.scadenza).localeCompare(String(b.scadenza)));
+
   return `<div class="grid2">
-    <section class="panel" id="sez-giacenze"><div class="sec-h"><h2>Giacenze</h2><div class="btns"><button class="btn btn-secondary btn-sm" data-act="openForm" data-f="carico">Registra carico</button><button class="btn btn-quiet btn-sm" data-act="openForm" data-f="rettifica">Rettifica</button></div></div>
-      <div class="drugs">${farmaci().map(f=>drugRow(f,st[f.id]||0)).join('')}</div>
-      ${S.coordForm==='carico'?formCarico():''}${S.coordForm==='rettifica'?formRettifica():''}</section>
+    <div class="block">
+      <section class="panel" id="sez-giacenze">
+        <div class="sec-h"><h2>Giacenze complessive</h2><div class="btns"><button class="btn btn-secondary btn-sm" data-act="openForm" data-f="carico">Registra carico</button><button class="btn btn-quiet btn-sm" data-act="openForm" data-f="rettifica">Rettifica</button></div></div>
+        <div class="drugs">${farmaci().map(f=>drugRow(f,st[f.id]||0)).join('')}</div>
+        ${S.coordForm==='carico'?formCarico():''}${S.coordForm==='rettifica'?formRettifica():''}
+      </section>
+
+      <section class="panel">
+        <div class="sec-h"><h2>Scatole e Lotti in cassaforte (FEFO)</h2><span class="pill info">${lottiAttivi.length} attive</span></div>
+        <p class="fine">Elenco ordinato per priorità di scadenza. Il sistema scala automaticamente la scatola più vicina alla scadenza.</p>
+        ${lottiAttivi.length ? `<div class="tbl"><table>
+          <thead><tr><th>Farmaco</th><th>Lotto</th><th>Scadenza</th><th class="num">Fiale rimaste</th></tr></thead>
+          <tbody>
+            ${lottiAttivi.map(l=>{
+              const f = fById(l.farmacoId);
+              const expTs = parseScadenza(l.scadenza);
+              const days = expTs ? Math.ceil((expTs - Date.now())/86400000) : null;
+              const pill = days && days <= 30 ? '<span class="pill warn" style="margin-left:4px;">In scadenza</span>' : '';
+              return `<tr>
+                <td><b>${esc(f.nome)}</b></td>
+                <td><span class="mono">${esc(l.lotto)}</span></td>
+                <td>${esc(l.scadenza)}${pill}</td>
+                <td class="num"><b>${l.fialeRimaste}</b> <small>/ ${l.fialeTotali}</small></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table></div>` : '<p class="sub">Nessun lotto con fiale registrato.</p>'}
+      </section>
+    </div>
+
     <div class="block">
       <section class="panel"><h2>Chiave</h2>${keyStatusHTML(true)}${S.key&&S.key.status==='out'?'<div class="btns"><button class="btn btn-secondary btn-sm" data-act="markKeyIn">Registra come riposta</button></div>':''}</section>
       <section class="panel"><div class="sec-h"><h2>Codice keybox</h2>${codePill()}</div><p class="sub">In vigore dal <b>${c.codiceDal?ddmmyyyy(c.codiceDal):'—'}</b>${c.codiceDaNome?', impostato da '+esc(c.codiceDaNome):''}. Rotazione prevista ogni ${c.rotazioneGiorni||7} giorni.</p><div class="btns"><button class="btn btn-secondary" data-act="gotoCode">Cambia codice</button></div></section>
       <section class="panel"><h2>Oggi</h2><dl class="summary"><dt>Aperture keybox</dt><dd>${tEv.filter(e=>e.type==='chiave_presa').length}</dd>${farmaci().map(f=>`<dt>${esc(f.nome)} prelevata</dt><dd>${fiale(tPrel[f.id])}</dd>`).join('')}</dl></section>
-    </div></div>`;
+    </div>
+  </div>`;
 }
 
 function tabSegnalazioni(){
   const al=alerts();
-  if(!al.length) return `<div class="empty"><h2>Nessuna segnalazione aperta</h2><p>Chiave non restituita, fiale rotte, scorte basse, prelievi da trascrivere e codice da cambiare compaiono qui.</p></div>`;
-  return `<p class="fine">In uso reale queste segnalazioni arrivano anche per email o notifica al coordinatore.</p><div class="alerts">${al.map((a,i)=>{
+  if(!al.length) return `<div class="empty"><h2>Nessuna segnalazione aperta</h2><p>Chiave non restituita, lotti in scadenza, fiale rotte, scorte basse e codice da cambiare compaiono qui.</p></div>`;
+  return `<p class="fine">Le segnalazioni cliniche e di sicurezza consentono il controllo tempestivo del reparto.</p><div class="alerts">${al.map((a,i)=>{
     const ico=a.sev==='crit'?IC.alert:a.sev==='warn'?IC.alert:IC.info;
-    const ackForm=a.evt&&S.ackId===a.evt.id?`<form class="subform" data-submit="ackSave" data-id="${a.evt.id}" novalidate><label class="field"><span>Nota di presa visione</span><textarea id="ack-note" maxlength="300" placeholder="Es. verificato con l\u2019infermiere, vetri smaltiti correttamente"></textarea></label><div class="btns"><button class="btn btn-primary btn-sm">Conferma presa visione</button><button type="button" class="btn btn-quiet btn-sm" data-act="ackCancel">Annulla</button></div></form>`:'';
+    const ackForm=a.evt&&S.ackId===a.evt.id?`<form class="subform" data-submit="ackSave" data-id="${a.evt.id}" novalidate><label class="field"><span>Nota di presa visione</span><textarea id="ack-note" maxlength="300" placeholder="Es. verificato con l\u2019infermiere, fiale sostituite correttamente"></textarea></label><div class="btns"><button class="btn btn-primary btn-sm">Conferma presa visione</button><button type="button" class="btn btn-quiet btn-sm" data-act="ackCancel">Annulla</button></div></form>`:'';
     return `<div class="alert ${a.sev}"><span class="ico">${ico}</span><div class="alert-t">${esc(a.t)}</div><div class="alert-s">${esc(a.s)}</div>${a.acts.length&&!ackForm?`<div class="alert-acts">${a.acts.map(([l,act])=>`<button class="btn btn-secondary btn-sm" data-act="${act}" data-id="${a.evt?a.evt.id:''}">${l}</button>`).join('')}</div>`:''}${ackForm}</div>`;
   }).join('')}</div>`;
 }
@@ -903,12 +1044,12 @@ async function rpc(fn,args){
   return j;
 }
 function clearRemoteData(){
-  S.events=[]; S.staff={}; S.staffLoaded=false; S.key=null; S.base=null; S.codeValue=''; S.meId=null; S.meUser=null;
+  S.events=[]; S.staff={}; S.staffLoaded=false; S.key=null; S.base=null; S.codeValue=''; S.meId=null; S.meUser=null; S.lotti=[];
   S.config=S.publicInfo||null;
 }
 function applyRemote(st){
   if(!st||!st.me) return;
-  S.config=st.config; S.base=st.base; S.key=st.key; S.events=st.events||[];
+  S.config=st.config; S.base=st.base; S.key=st.key; S.events=st.events||[]; S.lotti=st.lotti||[];
   const m={}; (st.staff||[]).forEach(x=>{ m[x.id]=x; }); S.staff=m; S.staffLoaded=true; S.meId=st.me.id; S.meUser=st.me;
 }
 async function loadPublic(){
@@ -944,7 +1085,7 @@ const RemoteApi={
   receiveKey(){ return RemoteApi.act('receive_key'); },
   prelievo(o){ return RemoteApi.act('prelievo',{qty:o.qty,paziente:o.paziente,motivo:o.motivo,note:o.note}); },
   async transcribed(e){ await RemoteApi.act('transcribed',{id:e.id}); return S.events.find(x=>x.id===e.id)||Object.assign({},e,{trascritto:true,trascrittoTs:Date.now()}); },
-  carico(delta,rif){ return RemoteApi.act('carico',{delta,riferimento:rif}); },
+  carico(delta,rif,lotti){ return RemoteApi.act('carico',{delta,riferimento:rif,lotti}); },
   rettifica(a,motivo){ return RemoteApi.act('rettifica',{a,motivo}); },
   ack(e,note){ return RemoteApi.act('ack',{id:e.id,note}); },
   codeSet(code){ return RemoteApi.act('code_set',{codice:code}); },
@@ -1197,11 +1338,38 @@ const SUBMIT={
     S.lastActivity=Date.now(); saveSession(); S.view='coord'; S.tab='impostazioni'; render(); toast('Reparto creato. Ora aggiungi il personale.');
   },
   async carico(){
-    const delta={}; let any=false, bad=false;
-    farmaci().forEach(f=>{ const v=val('ca-'+f.id); if(!/^\d{1,3}$/.test(v)) bad=true; const n=Number(v); if(n>0){ delta[f.id]=n; any=true; } });
-    if(bad||!any){ $('#ca-err').textContent='Indica quante fiale sono arrivate.'; return; }
-    await Api.carico(delta,val('ca-rif'));
-    S.coordForm=null; render(); toast('Carico registrato: '+deltaText(delta,true)+'.');
+    const delta={}; const lotti=[]; let any=false, bad=false;
+    
+    farmaci().forEach(f=>{
+      const scatVal = val('ca-scat-'+f.id);
+      const scat = Number(scatVal) || 0;
+      const lot = val('ca-lot-'+f.id);
+      const exp = val('ca-exp-'+f.id);
+
+      if(scat > 0){
+        if(!lot || !exp){
+          bad = true;
+          $('#ca-err').textContent = `Inserisci sia il Lotto che la Scadenza per le scatole di ${f.nome}.`;
+          return;
+        }
+        const totFiale = scat * 5;
+        delta[f.id] = (delta[f.id] || 0) + totFiale;
+        lotti.push({
+          farmacoId: f.id,
+          scatole: scat,
+          fiale: totFiale,
+          lotto: lot.toUpperCase(),
+          scadenza: exp
+        });
+        any = true;
+      }
+    });
+
+    if(bad) return;
+    if(!any){ $('#ca-err').textContent='Indica almeno una scatola da caricare.'; return; }
+    
+    await Api.carico(delta, val('ca-rif'), lotti);
+    S.coordForm=null; render(); toast('Carico registrato: '+deltaText(delta,true)+' con tracciabilità lotti.');
   },
   async rettifica(){
     const a={}; let bad=false; farmaci().forEach(f=>{ const v=val('re-'+f.id); if(!/^\d{1,3}$/.test(v)) bad=true; a[f.id]=Number(v); });
