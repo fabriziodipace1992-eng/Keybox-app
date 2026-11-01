@@ -9,6 +9,9 @@ const CFG_PRESENT=!!window.KEYBOX_CONFIG;
 
 const LS_KEY='keybox-stupefacenti-v1';
 const SS_KEY='keybox-sessione-v1';
+const LS_SNOOZE_KEY='keybox-snoozed-lotti-v1';
+const LS_NEGATI_KEY='keybox-dismissed-negati-ts';
+
 const CODE_SECONDS=30;
 const $=(s,r)=>(r||document).querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -28,6 +31,34 @@ function dayLabel(key){
 }
 function uid(){return 'e'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
 function val(id){const el=document.getElementById(id);return el?String(el.value).trim():'';}
+
+function loadPersistedState(){
+  let snoozed = {};
+  let negatiTs = 0;
+  try {
+    const rawS = localStorage.getItem(LS_SNOOZE_KEY);
+    if(rawS) snoozed = JSON.parse(rawS) || {};
+  } catch(e){}
+  try {
+    const rawN = localStorage.getItem(LS_NEGATI_KEY);
+    if(rawN) negatiTs = Number(rawN) || 0;
+  } catch(e){}
+  return { snoozed, negatiTs };
+}
+
+function persistSnooze(id, until){
+  S.snoozedLotti[id] = until;
+  try {
+    localStorage.setItem(LS_SNOOZE_KEY, JSON.stringify(S.snoozedLotti));
+  } catch(e){}
+}
+
+function persistDismissNegati(ts){
+  S.dismissedNegatiTs = ts;
+  try {
+    localStorage.setItem(LS_NEGATI_KEY, String(ts));
+  } catch(e){}
+}
 
 const IC={
   key:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4"/><path d="M10.4 12.6 19 4M15.5 7.5l2.5 2.5M13.5 9.5l2 2"/></svg>',
@@ -123,6 +154,9 @@ const DEFAULT_FARMACI=[
   {id:'morfina',nome:'Morfina',sale:'cloridrato',dosaggio:'10 mg / 1 ml',forma:'fiala',sigla:'M',tema:'m',soglia:5,unitaPerScatola:5,attivo:true},
   {id:'fentanyl',nome:'Fentanyl',sale:'citrato',dosaggio:'100 microgrammi / 2 ml',forma:'fiala',sigla:'F',tema:'f',soglia:5,unitaPerScatola:5,attivo:true}
 ];
+
+const initialPersisted = loadPersistedState();
+
 const S={
   loaded:false, loadError:false, staffLoaded:false, readOnly:false,
   config:null, base:null, key:null, staff:{}, events:[], lotti:[],
@@ -135,9 +169,10 @@ const S={
   showMyPinModal:false,
   recoveryFlow:null,
   assocLottoFarmacoId:null,
-  snoozedLotti:{},
-  dismissedNegatiTs:0
+  snoozedLotti: initialPersisted.snoozed,
+  dismissedNegatiTs: initialPersisted.negatiTs
 };
+
 const cfg=()=>S.config||{};
 const farmaciTutti=()=>(S.config&&S.config.farmaci)||DEFAULT_FARMACI;
 const farmaci=()=>farmaciTutti().filter(f=>f.attivo!==false);
@@ -314,12 +349,20 @@ function alerts(){
   const k=S.key;
   if(k&&k.status==='out'&&mins(k.since)>tout) out.push({sev:'crit',t:'Chiave fuori dalla keybox da '+mins(k.since)+' minuti',s:'Presa da '+(k.byName||'?')+' alle '+hhmm(k.since)+'. Limite impostato: '+tout+' min.',acts:[['Registra come riposta','markKeyIn']]});
   
+  // Riconcilia lo stato dei lotti silenziati anche leggendo lo storico eventi di Supabase
+  const ackedLottiFromEvents = new Set();
+  S.events.filter(e => e.type === 'gestione_scadenza' && e.lottoId).forEach(e => {
+    if(e.untilTs && now < e.untilTs) S.snoozedLotti[e.lottoId] = e.untilTs;
+    else if(!e.untilTs && now - e.ts < 30 * 86400000) ackedLottiFromEvents.add(e.lottoId);
+  });
+
   (S.lotti || []).filter(l => ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0).forEach(l => {
     const expTs = parseScadenza(l.scadenza);
     const rimaste = l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste;
     const snoozeUntil = S.snoozedLotti[l.id] || 0;
     
     if(snoozeUntil && now < snoozeUntil) return;
+    if(ackedLottiFromEvents.has(l.id)) return;
 
     if(expTs){
       const diffDays = Math.ceil((expTs - now) / 86400000);
@@ -369,9 +412,13 @@ function alerts(){
     });
   });
 
+  // Accessi negati: legge anche l'ultimo evento di presa visione salvato nel DB
+  const lastNegatiAckEvt = S.events.find(e => e.type === 'gestione_accessi_negati');
+  const effectiveDismissedTs = Math.max(S.dismissedNegatiTs || 0, lastNegatiAckEvt ? lastNegatiAckEvt.ts : 0);
+
   const neg=S.events.filter(e=>e.type==='accesso_negato'&&now-e.ts<86400000);
   const maxNegTs = neg.reduce((m, e)=>Math.max(m, e.ts||0), 0);
-  if(neg.length>=3 && maxNegTs > S.dismissedNegatiTs){
+  if(neg.length>=3 && maxNegTs > effectiveDismissedTs){
     out.push({
       id: 'sec_negati',
       sev: 'warn',
@@ -1477,17 +1524,19 @@ const A={
       t.focus();
     }
   },
-  snoozeLotto7(d){
+  async snoozeLotto7(d){
     const lottoId = d.lottoId || d.id.replace('exp_','');
-    S.snoozedLotti[lottoId] = Date.now() + (7 * 86400000);
-    addEvent('gestione_scadenza', { nota: 'Avviso scadenza lotto posticipato di 7 giorni' }).catch(()=>{});
+    const until = Date.now() + (7 * 86400000);
+    persistSnooze(lottoId, until);
+    await addEvent('gestione_scadenza', { lottoId, untilTs: until, nota: 'Avviso scadenza lotto posticipato di 7 giorni' }).catch(()=>{});
     render();
     toast('Segnalazione posticipata di 7 giorni.');
   },
-  snoozeLotto15(d){
+  async snoozeLotto15(d){
     const lottoId = d.lottoId || d.id.replace('exp_','');
-    S.snoozedLotti[lottoId] = Date.now() + (15 * 86400000);
-    addEvent('gestione_scadenza', { nota: 'Avviso scadenza lotto posticipato di 15 giorni' }).catch(()=>{});
+    const until = Date.now() + (15 * 86400000);
+    persistSnooze(lottoId, until);
+    await addEvent('gestione_scadenza', { lottoId, untilTs: until, nota: 'Avviso scadenza lotto posticipato di 15 giorni' }).catch(()=>{});
     render();
     toast('Segnalazione posticipata di 15 giorni.');
   },
@@ -1709,14 +1758,17 @@ const SUBMIT={
     const note = val('ack-note');
 
     if(alertId === 'sec_negati'){
-      S.dismissedNegatiTs = Date.now();
+      const now = Date.now();
+      persistDismissNegati(now);
       await addEvent('gestione_accessi_negati', {
-        nota: `Presa visione accessi negati: ${note || 'Verificato con l\'équipe'}`
+        nota: `Presa visione accessi negati: ${note || 'Verificato con il personale in turno'}`
       });
     } else if(lottoId){
-      S.snoozedLotti[lottoId] = Date.now() + (365 * 86400000);
+      const forever = Date.now() + (365 * 86400000);
+      persistSnooze(lottoId, forever);
       await addEvent('gestione_scadenza', {
         lottoId,
+        untilTs: forever,
         nota: `Presa visione scadenza lotto: ${note || 'Nessuna nota aggiuntiva'}`
       });
     } else if(evtId){
@@ -1873,7 +1925,6 @@ document.addEventListener('pointermove',e=>{
     if(Math.abs(dx)>8&&Math.abs(dx)>Math.abs(dy)*1.2){ SW.drag=true; SW.w.classList.add('drag'); SW.el.style.transition='none'; try{ SW.el.setPointerCapture(e.pointerId); }catch(_){} }
     else { if(Math.abs(dy)>10) SW.el=null; return; }
   }
-  SW.el=row;
   SW.el.style.transform='translateX('+Math.max(-DEL_W-28,Math.min(0,SW.base+dx))+'px)';
 });
 function endSwipe(e){
