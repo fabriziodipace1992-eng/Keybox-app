@@ -406,16 +406,29 @@ function viewPrelievo(){
       <button class="btn btn-quiet btn-block" data-act="flowBack">Modifica</button>`;
   }
   const e=F.evt; const sel=Object.keys(e.delta||{});
+  const isTrascritto = !!e.trascritto;
   return `${flowHead(3,3,'Fatto')}
     <div class="done"><span>${IC.check}</span>Prelievo registrato alle ${hhmm(e.ts)}</div>
-    <section class="block"><h2>Riga per il registro di carico e scarico</h2>
-    <p class="lead">Riporta questi dati sul registro ufficiale del reparto: il registro cartaceo resta il documento legale.</p>
-    ${sel.map(id=>{ const f=fById(id); return `<div class="twin-rec d-${f.tema}"><div class="twin-h"><span class="badge"><b>${esc(f.sigla)}</b></span><b>${esc(f.nome)} ${esc(f.sale||'')}</b><span class="muted">${esc(f.dosaggio)}</span></div>
-      <dl class="twin-grid"><div><dt>Data</dt><dd>${ddmmyyyy(e.ts)}</dd></div><div><dt>Ora</dt><dd>${hhmm(e.ts)}</dd></div><div><dt>Paziente</dt><dd>${esc(e.paziente||'—')}</dd></div><div><dt>Scarico</dt><dd>${-e.delta[id]}</dd></div><div><dt>Giacenza</dt><dd>${e.giacenzaDopo?e.giacenzaDopo[id]:'—'}</dd></div></dl></div>`; }).join('')}
-    ${e.trascritto?`<div class="row-meta"><span class="pill ok">Trascritto sul registro alle ${hhmm(e.trascrittoTs||Date.now())}</span></div>`:`<button class="btn btn-secondary btn-block" data-act="markTranscribed">Ho trascritto sul registro ufficiale</button>`}
-    </section>
-    <button class="btn btn-primary btn-lg btn-block" data-act="returnKey">Ho rimesso la chiave nella keybox</button>
-    <button class="btn btn-quiet btn-block" data-act="goHome">Torna alla schermata principale</button>`;
+    <section class="block">
+      <h2>Riga per il registro di carico e scarico</h2>
+      <p class="lead">Trascrivi subito questi dati sul registro vidimato cartaceo del reparto.</p>
+      ${sel.map(id=>{ const f=fById(id); return `<div class="twin-rec d-${f.tema}"><div class="twin-h"><span class="badge"><b>${esc(f.sigla)}</b></span><b>${esc(f.nome)} ${esc(f.sale||'')}</b><span class="muted">${esc(f.dosaggio)}</span></div>
+        <dl class="twin-grid"><div><dt>Data</dt><dd>${ddmmyyyy(e.ts)}</dd></div><div><dt>Ora</dt><dd>${hhmm(e.ts)}</dd></div><div><dt>Paziente</dt><dd>${esc(e.paziente||'—')}</dd></div><div><dt>Scarico</dt><dd>${-e.delta[id]}</dd></div><div><dt>Giacenza</dt><dd>${e.giacenzaDopo?e.giacenzaDopo[id]:'—'}</dd></div></dl></div>`; }).join('')}
+      
+      ${!isTrascritto ? `
+        <div class="status warn" style="margin-top:6px;">
+          <span class="ico">${IC.alert}</span>
+          <div><strong>Trascrizione obbligatoria</strong><span class="sub">Compila la riga sul registro cartaceo e tocca il tasto qui sotto per sbloccare le azioni successive.</span></div>
+        </div>
+        <button class="btn btn-primary btn-lg btn-block" data-act="markTranscribed">Ho trascritto sul registro ufficiale</button>
+      ` : `
+        <div class="row-meta" style="margin-block:10px;"><span class="pill ok">Trascritto sul registro cartaceo alle ${hhmm(e.trascrittoTs||Date.now())}</span></div>
+        <div class="block" style="gap:10px;">
+          <button class="btn btn-secondary btn-lg btn-block" data-act="anotherPrelievo">+ Registra un altro prelievo per un altro paziente</button>
+          <button class="btn btn-primary btn-lg btn-block" data-act="returnKey">Ho rimesso la chiave nella keybox (Fine)</button>
+        </div>
+      `}
+    </section>`;
 }
 
 function viewCoord(){
@@ -798,6 +811,13 @@ const A={
     F.busy=false; F.step=3; render(); window.scrollTo(0,0);
   },
   async markTranscribed(){ const F=S.flow; F.evt=await Api.transcribed(F.evt); render(); },
+  anotherPrelievo(){
+    const q={}; farmaci().forEach(f=>q[f.id]=0);
+    S.flow={step:1,qty:q,paziente:'',motivo:'somministrazione',note:'',verified:{},err:''};
+    S.view='prelievo';
+    render();
+    window.scrollTo(0,0);
+  },
   ackOpen(d){ S.ackId=d.id; render(); const t=$('#ack-note'); if(t) t.focus(); },
   ackCancel(){ S.ackId=null; render(); },
   gotoCarico(){ S.tab='stato'; S.coordForm='carico'; S.scrollTo='sez-giacenze'; render(); },
