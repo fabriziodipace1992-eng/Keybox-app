@@ -120,8 +120,8 @@ const Store=(function(){
 })();
 
 const DEFAULT_FARMACI=[
-  {id:'morfina',nome:'Morfina',sale:'cloridrato',dosaggio:'10 mg / 1 ml',forma:'fiala',sigla:'M',tema:'m',soglia:5},
-  {id:'fentanyl',nome:'Fentanyl',sale:'citrato',dosaggio:'100 microgrammi / 2 ml',forma:'fiala',sigla:'F',tema:'f',soglia:5}
+  {id:'morfina',nome:'Morfina',sale:'cloridrato',dosaggio:'10 mg / 1 ml',forma:'fiala',sigla:'M',tema:'m',soglia:5,attivo:true},
+  {id:'fentanyl',nome:'Fentanyl',sale:'citrato',dosaggio:'100 microgrammi / 2 ml',forma:'fiala',sigla:'F',tema:'f',soglia:5,attivo:true}
 ];
 const S={
   loaded:false, loadError:false, staffLoaded:false, readOnly:false,
@@ -135,14 +135,15 @@ const S={
   showMyPinModal:false
 };
 const cfg=()=>S.config||{};
-const farmaci=()=>(S.config&&S.config.farmaci)||DEFAULT_FARMACI;
-const fById=id=>farmaci().find(f=>f.id===id)||{id,nome:id,sale:'',dosaggio:'',tema:'m',sigla:'?'};
+const farmaciTutti=()=>(S.config&&S.config.farmaci)||DEFAULT_FARMACI;
+const farmaci=()=>farmaciTutti().filter(f=>f.attivo!==false);
+const fById=id=>farmaciTutti().find(f=>f.id===id)||{id,nome:id,sale:'',dosaggio:'',tema:'m',sigla:'?'};
 const me=()=>S.meUser||(S.meId?S.staff[S.meId]:null);
 const isCoord=()=>{const m=me();return !!m&&m.ruolo==='coordinatore';};
 
 function stock(){
   const b=S.base||{giacenza:{},ts:0}; const g={};
-  farmaci().forEach(f=>g[f.id]=(b.giacenza&&b.giacenza[f.id])||0);
+  farmaciTutti().forEach(f=>g[f.id]=(b.giacenza&&b.giacenza[f.id])||0);
   S.events.forEach(e=>{ if(e.ts>b.ts&&e.delta){ Object.keys(e.delta).forEach(k=>{ g[k]=(g[k]||0)+e.delta[k]; }); } });
   return g;
 }
@@ -174,7 +175,7 @@ function detailText(e,short){
   switch(e.type){
     case 'prelievo': return [short?'':deltaText(e.delta),e.paziente,MOTIVO[e.motivo]||'',e.note].filter(Boolean).join(' · ');
     case 'carico': return [deltaText(e.delta,true),e.riferimento].filter(Boolean).join(' · ');
-    case 'rettifica': return farmaci().filter(f=>e.da&&e.a&&e.da[f.id]!==e.a[f.id]).map(f=>f.nome+' '+e.da[f.id]+' → '+e.a[f.id]).join(', ')+(e.motivo?' · '+e.motivo:'');
+    case 'rettifica': return farmaciTutti().filter(f=>e.da&&e.a&&e.da[f.id]!==e.a[f.id]).map(f=>f.nome+' '+e.da[f.id]+' → '+e.a[f.id]).join(', ')+(e.motivo?' · '+e.motivo:'');
     case 'chiave_riposta': return (typeof e.durataMin==='number'?'Fuori per '+e.durataMin+' min':'')+(e.registrataDaAltri?' · presa da '+(e.presaDaNome||'?'):'');
     case 'chiave_passata': return 'Da '+(e.daNome||'?')+' a '+(e.byName||'?');
     case 'accesso_negato': return 'Matricola inserita: '+(e.matricola||'?');
@@ -606,10 +607,52 @@ function tabImpostazioni(){
         </div>
         <div class="btns"><button class="btn btn-secondary btn-sm">Salva le regole</button></div>
       </form></section>
-    <section class="panel"><h2>Farmaci e soglie di riordino</h2>
-      <form class="block" data-submit="farmaciSave" novalidate>${farmaci().map(f=>`<div class="drug d-${f.tema}" style="flex-wrap:wrap"><span class="badge"><b>${esc(f.sigla)}</b></span><div class="drug-main"><div class="drug-name">${esc(f.nome.toUpperCase())} <span class="salt">${esc(f.sale||'')}</span></div></div>
-        <div class="two" style="flex-basis:100%"><label class="field"><span>Dosaggio</span><input id="fa-dos-${f.id}" type="text" maxlength="40" value="${esc(f.dosaggio)}"></label><label class="field"><span>Soglia di riordino (fiale)</span><input id="fa-sog-${f.id}" type="number" min="0" max="999" value="${f.soglia||0}"></label></div></div>`).join('')}
-        <div class="btns"><button class="btn btn-secondary btn-sm">Salva farmaci</button></div></form></section>
+    
+    <section class="panel">
+      <div class="sec-h"><h2>Farmaci in cassaforte</h2><span class="muted" style="font-size:14px">${farmaci().length} attivi</span></div>
+      <p class="fine">Modifica nome, dosaggio e soglia di riordino. Se un farmaco non è più in uso, toccando "Archivia" non comparirà più nei prelievi ma resterà nello storico.</p>
+      <form class="block" data-submit="farmaciSave" novalidate>
+        ${farmaciTutti().map(f=>`
+          <div class="drug d-${f.tema}" style="flex-wrap:wrap;border-left:5px solid var(--c-primary,#0D6A62);margin-bottom:12px;padding:12px;background:rgba(255,255,255,0.7);border-radius:8px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;width:100%;margin-bottom:8px;">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span class="badge"><b>${esc(f.sigla)}</b></span>
+                <b>${esc(f.nome)}</b> ${f.attivo===false?'<span class="pill">Archiviato</span>':''}
+              </div>
+              <button type="button" class="btn btn-quiet btn-sm" data-act="farmacoToggle" data-id="${esc(f.id)}">${f.attivo===false?'Ripristina':'Archivia'}</button>
+            </div>
+            <div class="two" style="width:100%;">
+              <label class="field"><span>Nome commerciale</span><input id="fa-nome-${f.id}" type="text" maxlength="40" value="${esc(f.nome)}"></label>
+              <label class="field"><span>Principio attivo / Sale</span><input id="fa-sale-${f.id}" type="text" maxlength="40" value="${esc(f.sale||'')}"></label>
+            </div>
+            <div class="two" style="width:100%;">
+              <label class="field"><span>Dosaggio / Volume</span><input id="fa-dos-${f.id}" type="text" maxlength="40" value="${esc(f.dosaggio)}"></label>
+              <label class="field"><span>Soglia riordino (fiale)</span><input id="fa-sog-${f.id}" type="number" min="0" max="999" value="${f.soglia||0}"></label>
+            </div>
+          </div>
+        `).join('')}
+        <div class="btns"><button class="btn btn-secondary btn-sm">Salva modifiche farmaci</button></div>
+      </form>
+      
+      <form class="subform" data-submit="farmacoAdd" novalidate style="margin-top:16px;">
+        <h3>Aggiungi farmaco alla cassaforte</h3>
+        <div class="two">
+          <label class="field"><span>Nome commerciale</span><input id="nf-nome" type="text" maxlength="40" placeholder="Es. Ossicodone"></label>
+          <label class="field"><span>Principio attivo / Sale</span><input id="nf-sale" type="text" maxlength="40" placeholder="Es. cloridrato"></label>
+        </div>
+        <div class="two">
+          <label class="field"><span>Dosaggio / Volume</span><input id="nf-dos" type="text" maxlength="40" placeholder="Es. 10 mg / 1 ml"></label>
+          <label class="field"><span>Sigla badge (1 o 2 lettere)</span><input id="nf-sigla" type="text" maxlength="2" placeholder="Es. O" style="text-transform:uppercase;"></label>
+        </div>
+        <div class="two">
+          <label class="field"><span>Soglia riordino (fiale)</span><input id="nf-sog" type="number" min="0" max="999" value="5"></label>
+          <label class="field"><span>Giacenza iniziale in cassaforte</span><input id="nf-init" type="number" min="0" max="999" value="0"></label>
+        </div>
+        <p class="err" id="nf-err"></p>
+        <div class="btns"><button class="btn btn-primary btn-sm">Aggiungi alla cassaforte</button></div>
+      </form>
+    </section>
+
     <section class="panel"><div class="sec-h"><h2>Personale</h2><span class="muted" style="font-size:14px">${staff.filter(s=>s.attivo!==false).length} attivi</span></div>
       <p class="fine">Scorri una persona verso sinistra per eliminarla.</p>
       <div>${staff.map(s=>{ const canDel=s.id!==S.meId; return `<div class="staff-item"><div class="swipe${S.swipeOpen===s.id?' open':''}"${canDel?` data-swipe="${esc(s.id)}"`:''}>${canDel?`<button class="swipe-del" data-act="staffDelAsk" data-id="${esc(s.id)}">Elimina</button>`:''}<div class="staff"><div><b>${esc(s.nome)}</b> ${s.attivo===false?'<span class="pill">Disattivato</span>':''}<div class="row-s">${s.ruolo==='coordinatore'?'Coordinatore':'Infermiere'} · matricola <span class="mono">${esc(s.id)}</span></div></div>
@@ -868,6 +911,15 @@ const A={
     render();
     window.scrollTo(0,0);
   },
+  async farmacoToggle(d){
+    const list=farmaciTutti().map(f=>{
+      if(f.id===d.id) return Object.assign({},f,{attivo:f.attivo===false?true:false});
+      return f;
+    });
+    await Api.farmaci(list);
+    render();
+    toast('Stato farmaco aggiornato.');
+  },
   ackOpen(d){ S.ackId=d.id; render(); const t=$('#ack-note'); if(t) t.focus(); },
   ackCancel(){ S.ackId=null; render(); },
   gotoCarico(){ S.tab='stato'; S.coordForm='carico'; S.scrollTo='sez-giacenze'; render(); },
@@ -991,8 +1043,54 @@ const SUBMIT={
     await Api.rules({rotazioneGiorni:rot,timeoutChiaveMin:key,sessioneMin:ses}); render(); toast('Regole salvate.');
   },
   async farmaciSave(){
-    const list=farmaci().map(f=>Object.assign({},f,{dosaggio:val('fa-dos-'+f.id)||f.dosaggio,soglia:Math.max(0,Number(val('fa-sog-'+f.id))||0)}));
-    await Api.farmaci(list); render(); toast('Farmaci salvati.');
+    const list=farmaciTutti().map(f=>{
+      const nomeInput = val('fa-nome-'+f.id);
+      const saleInput = val('fa-sale-'+f.id);
+      const dosInput  = val('fa-dos-'+f.id);
+      const sogInput  = val('fa-sog-'+f.id);
+      return Object.assign({}, f, {
+        nome: nomeInput || f.nome,
+        sale: saleInput != null ? saleInput : f.sale,
+        dosaggio: dosInput || f.dosaggio,
+        soglia: Math.max(0, Number(sogInput) || 0)
+      });
+    });
+    await Api.farmaci(list);
+    render();
+    toast('Farmaci salvati con successo.');
+  },
+  async farmacoAdd(){
+    const nome=val('nf-nome'), sale=val('nf-sale'), dos=val('nf-dos'), sigla=val('nf-sigla'), sog=Number(val('nf-sog'))||0, init=Number(val('nf-init'))||0;
+    const err=$('#nf-err');
+    if(!nome){ err.textContent='Inserisci il nome del farmaco.'; return; }
+    if(!dos){ err.textContent='Inserisci il dosaggio.'; return; }
+    if(!sigla){ err.textContent='Inserisci la sigla per il badge (1 o 2 lettere).'; return; }
+    
+    const id=nome.toLowerCase().replace(/[^a-z0-9]/g,'')+'_'+Date.now().toString(36).slice(-3);
+    const nuovo={
+      id,
+      nome,
+      sale,
+      dosaggio: dos,
+      forma: 'fiala',
+      sigla: sigla.toUpperCase(),
+      tema: 'm',
+      soglia: sog,
+      attivo: true,
+      giacenzaIniziale: init
+    };
+    
+    const list=farmaciTutti().concat([nuovo]);
+    await Api.farmaci(list);
+    
+    if(!REMOTE_ON){
+      const st=stock();
+      st[id]=init;
+      await Store.merge('app/state',{giacenza:st});
+    }
+    
+    render();
+    toast(nome+' aggiunto alla cassaforte con '+fiale(init)+'.');
   },
   async staffAdd(){
     const nome=val('sa-nome'), mat=val('sa-mat'), pin=val('sa-pin'), ruolo=val('sa-ruolo'); const err=$('#sa-err');
