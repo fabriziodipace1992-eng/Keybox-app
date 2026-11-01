@@ -186,16 +186,22 @@ function detailText(e,short){
 }
 function rowHTML(e){
   let title=TYPE[e.type]||e.type; const meta=[];
+  let rowAction='';
   if(e.type==='prelievo'){
     title='Prelievo · '+deltaText(e.delta);
     if(e.motivo==='rottura') meta.push('<span class="pill crit">Fiala rotta o caduta</span>');
-    meta.push(e.trascritto?'<span class="pill ok">Trascritto sul registro</span>':'<span class="pill warn">Da trascrivere</span>');
+    if(e.trascritto){
+      meta.push('<span class="pill ok">Trascritto sul registro</span>');
+    } else {
+      meta.push('<span class="pill warn">Da trascrivere</span>');
+      rowAction=`<div style="margin-top:6px;"><button class="btn btn-secondary btn-sm" data-act="markTranscribedById" data-id="${esc(e.id)}">Segna come trascritto</button></div>`;
+    }
   }
   if(e.type==='chiave_riposta'&&typeof e.durataMin==='number'&&e.durataMin>(cfg().timeoutChiaveMin||15)) meta.push('<span class="pill warn">Oltre il limite</span>');
   if(e.type==='accesso_negato') meta.push('<span class="pill warn">Sicurezza</span>');
   if(e.gestito) meta.push(`<span class="pill">Presa visione: ${esc(first(e.gestito.byName))} ${hhmm(e.gestito.ts)}</span>`);
   const sub=[e.type==='chiave_passata'?'':e.byName,detailText(e,true)].filter(Boolean).join(' · ');
-  return `<div class="row"><time>${hhmm(e.ts)}</time><div><div class="row-t">${esc(title)}</div><div class="row-s">${esc(sub)}</div>${meta.length?'<div class="row-meta">'+meta.join('')+'</div>':''}${e.gestito&&e.gestito.note?'<div class="row-s">Nota: '+esc(e.gestito.note)+'</div>':''}</div></div>`;
+  return `<div class="row"><time>${hhmm(e.ts)}</time><div><div class="row-t">${esc(title)}</div><div class="row-s">${esc(sub)}</div>${meta.length?'<div class="row-meta">'+meta.join('')+'</div>':''}${e.gestito&&e.gestito.note?'<div class="row-s">Nota: '+esc(e.gestito.note)+'</div>':''}${rowAction}</div></div>`;
 }
 
 function periodStart(days){ const s=new Date(); s.setHours(0,0,0,0); s.setDate(s.getDate()-(days-1)); return s.getTime(); }
@@ -214,17 +220,30 @@ function indicators(days){
     avg:rit.length?rit.reduce((a,e)=>a+e.durataMin,0)/rit.length:0,over:rit.filter(e=>e.durataMin>tout).length,rit:rit.length,
     totals,rotte,perDay,aperture:ev.filter(e=>e.type==='chiave_presa').length,negati:ev.filter(e=>e.type==='accesso_negato').length};
 }
+
 function alerts(){
   const out=[]; const c=cfg(); const now=Date.now(); const tout=c.timeoutChiaveMin||15; const st=stock();
   const k=S.key;
   if(k&&k.status==='out'&&mins(k.since)>tout) out.push({sev:'crit',t:'Chiave fuori dalla keybox da '+mins(k.since)+' minuti',s:'Presa da '+(k.byName||'?')+' alle '+hhmm(k.since)+'. Limite impostato: '+tout+' min.',acts:[['Registra come riposta','markKeyIn']]});
+  
   S.events.filter(e=>e.type==='prelievo'&&e.motivo==='rottura'&&!e.gestito&&now-e.ts<30*86400000).forEach(e=>{
     out.push({sev:'warn',t:'Fiala rotta o caduta · '+deltaText(e.delta),s:hhmm(e.ts)+' del '+ddmm(e.ts)+' · '+e.byName+(e.note?' · '+e.note:''),evt:e,acts:[['Presa visione','ackOpen']]});
   });
+  
   farmaci().forEach(f=>{ if((st[f.id]||0)<=(f.soglia||0)) out.push({sev:'warn',t:'Scorta di '+f.nome+' sotto soglia',s:'In cassetta '+fiale(st[f.id]||0)+', soglia di riordino '+f.soglia+'.',acts:[['Registra carico','gotoCarico']]}); });
+  
   const age=codeAgeDays(); if(c.codiceDal&&age>=(c.rotazioneGiorni||7)) out.push({sev:'warn',t:'Codice keybox in uso da '+age+' giorni',s:'La rotazione prevista è ogni '+(c.rotazioneGiorni||7)+' giorni.',acts:[['Cambia codice','gotoCode']]});
-  const nt=S.events.filter(e=>e.type==='prelievo'&&!e.trascritto&&now-e.ts>60*60000&&now-e.ts<7*86400000);
-  if(nt.length) out.push({sev:'warn',t:nt.length===1?'1 prelievo da trascrivere sul registro ufficiale':nt.length+' prelievi da trascrivere sul registro ufficiale',s:'Registrati da più di un’ora senza conferma di trascrizione.',acts:[['Vedi nel registro','gotoDaTrascrivere']]});
+  
+  S.events.filter(e=>e.type==='prelievo'&&!e.trascritto&&now-e.ts>60*60000&&now-e.ts<30*86400000).forEach(e=>{
+    out.push({
+      sev:'warn',
+      t:'Da trascrivere · '+deltaText(e.delta),
+      s:hhmm(e.ts)+' del '+ddmm(e.ts)+' · '+e.byName+(e.paziente?' · Paziente: '+e.paziente:''),
+      evt:e,
+      acts:[['Segna come trascritto','markTranscribedById'],['Vedi nel registro','gotoDaTrascrivere']]
+    });
+  });
+
   const neg=S.events.filter(e=>e.type==='accesso_negato'&&now-e.ts<86400000);
   if(neg.length>=3) out.push({sev:'warn',t:neg.length+' accessi negati nelle ultime 24 ore',s:'Matricole inserite: '+[...new Set(neg.map(e=>e.matricola))].join(', '),acts:[]});
   return out;
@@ -904,6 +923,13 @@ const A={
     F.busy=false; F.step=3; render(); window.scrollTo(0,0);
   },
   async markTranscribed(){ const F=S.flow; F.evt=await Api.transcribed(F.evt); render(); },
+  async markTranscribedById(d){
+    const e=S.events.find(x=>x.id===d.id);
+    if(!e) return;
+    await Api.transcribed(e);
+    render();
+    toast('Prelievo confermato come trascritto sul registro.');
+  },
   anotherPrelievo(){
     const q={}; farmaci().forEach(f=>q[f.id]=0);
     S.flow={step:1,qty:q,paziente:'',motivo:'somministrazione',note:'',verified:{},err:''};
