@@ -185,6 +185,22 @@ function detailText(e,short){
     default: return (e.nota||'');
   }
 }
+
+function resolveOperator(e){
+  const staffMember = e.by ? S.staff[e.by] : null;
+  const nome = (staffMember && staffMember.nome) || e.byName;
+  if(nome && e.by){
+    return `${nome} (matr. ${e.by})`;
+  }
+  if(nome){
+    return nome;
+  }
+  if(e.by){
+    return `Matr. ${e.by}`;
+  }
+  return 'Sistema';
+}
+
 function rowHTML(e){
   let title=TYPE[e.type]||e.type; const meta=[];
   let rowAction='';
@@ -202,7 +218,7 @@ function rowHTML(e){
   if(e.type==='accesso_negato'||/^sicurezza/.test(e.type)) meta.push('<span class="pill warn">Sicurezza</span>');
   if(e.gestito) meta.push(`<span class="pill">Presa visione: ${esc(first(e.gestito.byName))} ${hhmm(e.gestito.ts)}</span>`);
 
-  const operatore = e.byName ? `${e.byName}${e.by ? ' (matr. ' + e.by + ')' : ''}` : (e.by ? 'Matr. ' + e.by : 'Sistema');
+  const operatore = resolveOperator(e);
   const dettaglio = detailText(e, true);
 
   return `<div class="row">
@@ -1054,7 +1070,19 @@ const A={
   async exportCSV(){
     const flt=(FILTERS.find(f=>f[0]===S.filter)||FILTERS[0])[2];
     const rows=[['Data','Ora','Tipo','Operatore','Matricola','Dettaglio','Trascritto sul registro','Presa visione']];
-    S.events.filter(flt).forEach(e=>rows.push([ddmmyyyy(e.ts),hhmm(e.ts),TYPE[e.type]||e.type,e.byName,e.by,detailText(e),e.type==='prelievo'?(e.trascritto?'sì':'no'):'',e.gestito?(e.gestito.byName+' '+ddmmyyyy(e.gestito.ts)+' '+(e.gestito.note||'')):'']));
+    S.events.filter(flt).forEach(e=>{
+      const op = resolveOperator(e);
+      rows.push([
+        ddmmyyyy(e.ts),
+        hhmm(e.ts),
+        TYPE[e.type]||e.type,
+        op,
+        e.by||'',
+        detailText(e),
+        e.type==='prelievo'?(e.trascritto?'sì':'no'):'',
+        e.gestito?(resolveOperator(e.gestito)+' '+ddmmyyyy(e.gestito.ts)+' '+(e.gestito.note||'')):''
+      ]);
+    });
     const csv='﻿'+rows.map(r=>r.map(c=>'"'+String(c==null?'':c).replace(/"/g,'""')+'"').join(';')).join('\r\n');
     await saveFile('registro-keybox-'+dayKey(Date.now())+'.csv',csv);
   },
