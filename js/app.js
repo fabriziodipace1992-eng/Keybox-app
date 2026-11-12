@@ -385,7 +385,7 @@ function indicators(days){
 function alerts(){
   const out=[]; const c=cfg(); const now=Date.now(); const tout=c.timeoutChiaveMin||15; const st=stock();
   const k=S.key;
-  if(k&&k.status==='out'&&mins(k.since)>tout) out.push({sev:'crit',t:'Chiave fuori dalla keybox da '+mins(k.since)+' minuti',s:'Presa da '+(k.byName||'?')+' alle '+hhmm(k.since)+'. Limite impostato: '+tout+' min.',acts:[['Registra come riposta','markKeyIn']]});
+  if(k&&k.status==='out'&&mins(k.since)>tout) out.push({sev:'crit',t:'Chiave fuori dalla keybox da '+mins(k.since)+' minuti',s:'Presa da '+(k.byName||'?')+' il '+ddmm(k.since)+' alle '+hhmm(k.since)+'. Limite impostato: '+tout+' min.',acts:[['Registra come riposta','markKeyIn']]});
   
   const ackedLottiFromEvents = new Set();
   S.events.filter(e => e.type === 'gestione_scadenza' && e.lottoId).forEach(e => {
@@ -694,9 +694,9 @@ function viewLogin(){
 
 function keyStatusHTML(compact){
   const k=S.key; const tout=cfg().timeoutChiaveMin||15;
-  if(!k||k.status!=='out') return `<div class="status ok"><span class="ico">${IC.check}</span><div class="grow"><strong>Chiave nella keybox</strong><span class="sub">${k&&k.since?'Riposta alle '+hhmm(k.since)+(k.byName?' da '+esc(k.byName):''):'Nessun movimento registrato'}</span></div></div>`;
+  if(!k||k.status!=='out') return `<div class="status ok"><span class="ico">${IC.check}</span><div class="grow"><strong>Chiave nella keybox</strong><span class="sub">${k&&k.since?'Riposta il '+ddmm(k.since)+' alle '+hhmm(k.since)+(k.byName?' da '+esc(k.byName):''):'Nessun movimento registrato'}</span></div></div>`;
   const m=mins(k.since), late=m>tout, mine=k.by===S.meId;
-  const title=mine?'Hai la chiave dalle '+hhmm(k.since):'Chiave presa da '+esc(k.byName)+' alle '+hhmm(k.since);
+  const title=mine?'Hai la chiave dal '+ddmm(k.since)+' alle '+hhmm(k.since):'Chiave presa da '+esc(k.byName)+' il '+ddmm(k.since)+' alle '+hhmm(k.since);
   const sub=(m===0?'Adesso':m+' min')+(late?' · oltre il limite di '+tout+' min':'')+(mine?' · rimettila nella keybox appena finisci':'');
   const acts=(!mine&&!compact)?`<div class="status-acts"><button class="btn btn-secondary btn-sm" data-act="receiveKey">Me l’ha passata ${esc(first(k.byName))}</button><button class="btn btn-quiet btn-sm" data-act="markKeyIn">È già nella keybox</button></div>`:'';
   return `<div class="status ${late?'crit':mine?'info':'warn'}"><span class="ico">${late?IC.alert:IC.key}</span><div class="grow"><strong>${title}</strong><span class="sub">${sub}</span>${acts}</div></div>`;
@@ -715,7 +715,7 @@ function codePanel(){
   }
   if(S.confirmTake&&other){
     return `<section class="keybox"><div class="kb-top"><span class="kb-label">Codice keybox</span></div>
-      <div class="kb-warn">La chiave risulta presa da <b>${esc(k.byName)}</b> alle ${hhmm(k.since)}. Se apri la keybox, la chiave passa a tuo nome e la segnalazione resta nel registro.</div>
+      <div class="kb-warn">La chiave risulta presa da <b>${esc(k.byName)}</b> il ${ddmm(k.since)} alle ${hhmm(k.since)}. Se apri la keybox, la chiave passa a tuo nome e la segnalazione resta nel registro.</div>
       <button class="btn btn-kb btn-block btn-lg" data-act="takeKey" data-force="1">Apro comunque la keybox</button>
       <button class="btn btn-kb-quiet btn-block" data-act="cancelTake">Annulla</button></section>`;
   }
@@ -842,7 +842,7 @@ function viewPrelievo(){
   const e=F.evt; const sel=Object.keys(e.delta||{});
   const isTrascritto = !!e.trascritto;
   return `${flowHead(3,3,'Fatto')}
-    <div class="done"><span>${IC.check}</span>Prelievo registrato alle ${hhmm(e.ts)}</div>
+    <div class="done"><span>${IC.check}</span>Prelievo registrato il ${ddmm(e.ts)} alle ${hhmm(e.ts)}</div>
     <section class="block">
       <h2>Riga per il registro di carico e scarico</h2>
       <p class="lead">Trascrivi subito questi dati sul registro vidimato cartaceo del reparto.</p>
@@ -1198,7 +1198,7 @@ function tabImpostazioni(){
       <p class="fine">Scorri una persona verso sinistra per eliminarla.</p>
       <div>${staff.map(s=>{ const canDel=s.id!==S.meId; return `<div class="staff-item"><div class="swipe${S.swipeOpen===s.id?' open':''}"${canDel?` data-swipe="${esc(s.id)}"`:''}>${canDel?`<button class="swipe-del" data-act="staffDelAsk" data-id="${esc(s.id)}">Elimina</button>`:''}<div class="staff"><div><b>${esc(s.nome)}</b> ${s.attivo===false?'<span class="pill">Disattivato</span>':''}<div class="row-s">${s.ruolo==='coordinatore'?'Coordinatore':'Infermiere'} · matricola <span class="mono">${esc(s.id)}</span></div></div>
         <div class="btns"><button class="btn btn-quiet btn-sm" data-act="pinOpen" data-id="${esc(s.id)}">Resetta PIN</button>${s.id!==S.meId?`<button class="btn btn-quiet btn-sm" data-act="staffToggle" data-id="${esc(s.id)}">${s.attivo===false?'Riattiva':'Disattiva'}</button>`:''}</div></div></div>
-        ${S.delAsk===s.id?`<div class="subform del-ask"><p><b>Eliminare ${esc(s.nome)}?</b></p><p class="sub">Non potrà più accedere all\u2019app. I movimenti già registrati restano nel registro con il suo nome.</p><div class="btns"><button class="btn btn-danger btn-sm" data-act="staffDel" data-id="${esc(s.id)}">Elimina definitivamente</button><button class="btn btn-quiet btn-sm" data-act="staffDelCancel">Annulla</button></div></div>`:''}
+        ${S.delAsk===s.id?`<div class="subform del-ask"><p><b>Eliminare ${esc(s.nome)}?</b></p><p class="sub">Non potrà più accedere all\u2019app. I movimenti già registrati restano nel registro con il suo nome.</p><div class="btns"><button class="btn btn-danger btn-sm" data-act="staffDel" data-id="${esc(s.id)}">Elimina definitivamente</button><button type="button" class="btn btn-quiet btn-sm" data-act="staffDelCancel">Annulla</button></div></div>`:''}
         ${S.pinFor===s.id?`<form class="subform" data-submit="pinSave" data-id="${esc(s.id)}" novalidate><label class="field"><span>Nuovo PIN provvisorio per ${esc(s.nome)}</span><input id="pn-pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"><small>Dovrà reimpostarlo al login successivo.</small></label><p class="err" id="pn-err"></p><div class="btns"><button class="btn btn-primary btn-sm">Salva il PIN provvisorio</button><button type="button" class="btn btn-quiet btn-sm" data-act="pinCancel">Annulla</button></div></form>`:''}</div>`; }).join('')}</div>
       <form class="subform" data-submit="staffAdd" novalidate><h3>Aggiungi una persona</h3>
         <label class="field"><span>Nome e cognome</span><input id="sa-nome" type="text" maxlength="60"></label>
@@ -1284,7 +1284,7 @@ const LocalApi={
   async takeKey(){
     const k=S.key; const mine=!!(k&&k.status==='out'&&k.by===S.meId); const other=!!(k&&k.status==='out'&&!mine);
     if(!mine){
-      await addEvent('chiave_presa',other?{nota:'Risultava presa da '+k.byName+' alle '+hhmm(k.since)}:{});
+      await addEvent('chiave_presa',other?{nota:'Risultava presa da '+k.byName+' il '+ddmm(k.since)+' alle '+hhmm(k.since)}:{});
       await Store.set('app/key',{status:'out',by:S.meId,byName:me().nome,since:Date.now()});
     }
     return String(cfg().codice);
@@ -1560,7 +1560,7 @@ const A={
     const riepilogo = farmaci().map(f => `${f.nome}: ${st[f.id]||0}`).join(', ');
     await Api.verificaTurno(`Corrispondenza giacenze confermata (${riepilogo})`);
     await Api.returnKey();
-    logout('Verifica giacenze registrata e chiave riposta alle '+hhmm(Date.now())+'. Sessione chiusa.');
+    logout('Verifica giacenze registrata e chiave riposta il '+ddmm(Date.now())+' alle '+hhmm(Date.now())+'. Sessione chiusa.');
   },
   async quarantenaLotto(d){
     const lottoId = d.lottoId || d.id.replace('exp_','');
@@ -1596,7 +1596,7 @@ const A={
   hideCode(){ S.codeShownUntil=0; S.codeValue=''; render(); },
   async returnKey(){
     await Api.returnKey();
-    logout('Chiave riposta alle '+hhmm(Date.now())+'. Sessione chiusa.');
+    logout('Chiave riposta il '+ddmm(Date.now())+' alle '+hhmm(Date.now())+'. Sessione chiusa.');
   },
   async receiveKey(){
     const k=S.key; if(!k||k.status!=='out') return;
