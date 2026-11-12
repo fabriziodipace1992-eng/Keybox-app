@@ -760,14 +760,16 @@ function viewHome(){
 
   return `${keyStatusHTML(false)}
     ${codePanel()}
-    ${mine?`<div class="block"><button class="btn btn-primary btn-lg btn-block" data-act="startPrelievo">Registra un prelievo</button><button class="btn btn-secondary btn-block" data-act="returnKey">Ho rimesso la chiave nella keybox</button></div>`:`<p class="hint">Per registrare un prelievo, prima mostra il codice e prendi la chiave.</p>`}
+    ${mine?`
+      <div class="block" style="gap:10px;">
+        <button class="btn btn-primary btn-lg btn-block" data-act="startPrelievo">Registra un prelievo</button>
+        <button class="btn btn-secondary btn-lg btn-block" data-act="verificaTurno">✓ Conferma verifica giacenze (Cambio turno)</button>
+        <button class="btn btn-quiet btn-block" data-act="returnKey">Ho rimesso la chiave nella keybox</button>
+      </div>` : `<p class="hint">Per registrare un prelievo o effettuare il controllo giacenze al cambio turno, prima mostra il codice e prendi la chiave.</p>`}
     <section class="block">
       <div class="sec-h"><h2>In cassetta</h2><span class="muted" style="font-size:14px">secondo il registro digitale</span></div>
       <div class="drugs">${farmaci().map(f=>drugRow(f,st[f.id]||0)).join('')}</div>
-      <div style="margin-top:6px;">
-        <button class="btn btn-secondary btn-block" data-act="verificaTurno">✓ Conferma verifica giacenze (Cambio turno)</button>
-        ${lastCheck ? `<p class="fine" style="text-align:center;margin-top:4px;">Ultima verifica turno: <b>${ddmm(lastCheck.ts)} alle ${hhmm(lastCheck.ts)}</b> · ${esc(resolveOperator(lastCheck))}</p>` : ''}
-      </div>
+      ${lastCheck ? `<p class="fine" style="text-align:center;margin-top:4px;">Ultima verifica turno: <b>${ddmm(lastCheck.ts)} alle ${hhmm(lastCheck.ts)}</b> · ${esc(resolveOperator(lastCheck))}</p>` : ''}
     </section>
     ${recent.length?`<section class="block"><h2>Ultimi movimenti</h2><div class="panel" style="gap:0;padding-block:4px"><div class="rows">${recent.map(rowHTML).join('')}</div></div></section>`:''}`;
 }
@@ -1557,8 +1559,8 @@ const A={
     const st = stock();
     const riepilogo = farmaci().map(f => `${f.nome}: ${st[f.id]||0}`).join(', ');
     await Api.verificaTurno(`Corrispondenza giacenze confermata (${riepilogo})`);
-    render();
-    toast('Verifica giacenze al cambio turno registrata nel database.');
+    await Api.returnKey();
+    logout('Verifica giacenze registrata e chiave riposta alle '+hhmm(Date.now())+'. Sessione chiusa.');
   },
   async quarantenaLotto(d){
     const lottoId = d.lottoId || d.id.replace('exp_','');
