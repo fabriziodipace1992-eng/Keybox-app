@@ -1607,7 +1607,8 @@ function tabImpostazioni(){
       <div>${staff.map(s=>{
         const canDel=s.id!==S.meId;
         const profEvt = S.events.find(e => e.type === 'personale_profilato' && e.matricola === s.id);
-        const profInfo = profEvt ? ` · Profilato il ${ddmmyyyy(profEvt.ts)}` : '';
+        const profTs = s.createdAt || (profEvt && profEvt.ts);
+        const profInfo = profTs ? ` · Profilato il ${ddmmyyyy(profTs)}` : '';
         return `<div class="staff-item"><div class="swipe${S.swipeOpen===s.id?' open':''}"${canDel?` data-swipe="${esc(s.id)}"`:''}>${canDel?`<button class="swipe-del" data-act="staffDelAsk" data-id="${esc(s.id)}">Elimina</button>`:''}<div class="staff"><div><b>${esc(s.nome)}</b> ${s.attivo===false?'<span class="pill">Disattivato</span>':''} ${s.deveCambiarePin?'<span class="pill warn">PIN provvisorio</span>':''}<div class="row-s">${s.ruolo==='coordinatore'?'Coordinatore':'Infermiere'} · matricola <span class="mono">${esc(s.id)}</span>${profInfo}</div></div>
         <div class="btns"><button class="btn btn-quiet btn-sm" data-act="pinOpen" data-id="${esc(s.id)}">Resetta PIN</button>${s.id!==S.meId?`<button class="btn btn-quiet btn-sm" data-act="staffToggle" data-id="${esc(s.id)}">${s.attivo===false?'Riattiva':'Disattiva'}</button>`:''}</div></div></div>
         ${S.delAsk===s.id?`<div class="subform del-ask"><p><b>Eliminare ${esc(s.nome)}?</b></p><p class="sub">Non potrà più accedere all\u2019app. I movimenti già registrati restano nel registro con il suo nome.</p><div class="btns"><button class="btn btn-danger btn-sm" data-act="staffDel" data-id="${esc(s.id)}">Elimina definitivamente</button><button type="button" class="btn btn-quiet btn-sm" data-act="staffDelCancel">Annulla</button></div></div>`:''}
@@ -1673,12 +1674,12 @@ const LocalApi={
   async refresh(){},
   async setup(p){
     const now=Date.now();
-    await Store.set('staff/'+p.matricola,{nome:p.nome,ruolo:'coordinatore',email:p.email,pinHash:await pinHash(p.matricola,p.pin),attivo:true,deveCambiarePin:false});
+    await Store.set('staff/'+p.matricola,{nome:p.nome,ruolo:'coordinatore',email:p.email,pinHash:await pinHash(p.matricola,p.pin),attivo:true,deveCambiarePin:false,createdAt:now});
     await Store.set('app/state',{giacenza:p.giacenza,ts:now,fonte:'avvio'});
     await Store.set('app/key',{status:'in',since:now});
     await Store.set('app/config',{reparto:p.reparto,demo:false,codice:p.codice,codiceDal:now,codiceDa:p.matricola,codiceDaNome:p.nome,rotazioneGiorni:7,timeoutChiaveMin:15,sessioneMin:5,farmaci:DEFAULTFARMACI_SAFE(),appUrl:''});
     S.meId=p.matricola;
-    S.meUser={nome:p.nome,ruolo:'coordinatore',id:p.matricola,email:p.email,deveCambiarePin:false};
+    S.meUser={nome:p.nome,ruolo:'coordinatore',id:p.matricola,email:p.email,deveCambiarePin:false,createdAt:now};
   },
   async changeMyPin(pin){
     const h=await pinHash(S.meId,pin);
@@ -1799,7 +1800,8 @@ const LocalApi={
   rules(o){ return Store.merge('app/config',o); },
   farmaci(list){ return Store.merge('app/config',{farmaci:list}); },
   async staffAdd(o){
-    await Store.set('staff/'+o.matricola,{nome:o.nome,ruolo:o.ruolo,pinHash:await pinHash(o.matricola,o.pin),attivo:true,deveCambiarePin:true});
+    const now=Date.now();
+    await Store.set('staff/'+o.matricola,{nome:o.nome,ruolo:o.ruolo,pinHash:await pinHash(o.matricola,o.pin),attivo:true,deveCambiarePin:true,createdAt:now});
     await addEvent('personale_profilato',{matricola:o.matricola,nome:o.nome,ruolo:o.ruolo,nota:`Profilo creato per ${o.nome} (matr. ${o.matricola})`});
   },
   async staffToggle(id){
