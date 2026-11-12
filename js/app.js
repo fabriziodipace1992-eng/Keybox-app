@@ -11,6 +11,7 @@ const LS_KEY='keybox-stupefacenti-v1';
 const SS_KEY='keybox-sessione-v1';
 const LS_SNOOZE_KEY='keybox-snoozed-lotti-v1';
 const LS_NEGATI_KEY='keybox-dismissed-negati-ts';
+const LS_QUARANTENA_KEY='keybox-quarantena-lotti-v1';
 
 const CODE_SECONDS=30;
 const $=(s,r)=>(r||document).querySelector(s);
@@ -35,6 +36,7 @@ function val(id){const el=document.getElementById(id);return el?String(el.value)
 function loadPersistedState(){
   let snoozed = {};
   let negatiTs = 0;
+  let quarantena = {};
   try {
     const rawS = localStorage.getItem(LS_SNOOZE_KEY);
     if(rawS) snoozed = JSON.parse(rawS) || {};
@@ -43,21 +45,25 @@ function loadPersistedState(){
     const rawN = localStorage.getItem(LS_NEGATI_KEY);
     if(rawN) negatiTs = Number(rawN) || 0;
   } catch(e){}
-  return { snoozed, negatiTs };
+  try {
+    const rawQ = localStorage.getItem(LS_QUARANTENA_KEY);
+    if(rawQ) quarantena = JSON.parse(rawQ) || {};
+  } catch(e){}
+  return { snoozed, negatiTs, quarantena };
 }
 
 function persistSnooze(id, until){
   S.snoozedLotti[id] = until;
-  try {
-    localStorage.setItem(LS_SNOOZE_KEY, JSON.stringify(S.snoozedLotti));
-  } catch(e){}
+  try { localStorage.setItem(LS_SNOOZE_KEY, JSON.stringify(S.snoozedLotti)); } catch(e){}
 }
 
 function persistDismissNegati(ts){
   S.dismissedNegatiTs = ts;
-  try {
-    localStorage.setItem(LS_NEGATI_KEY, String(ts));
-  } catch(e){}
+  try { localStorage.setItem(LS_NEGATI_KEY, String(ts)); } catch(e){}
+}
+
+function persistQuarantena(){
+  try { localStorage.setItem(LS_QUARANTENA_KEY, JSON.stringify(S.quarantenaLotti)); } catch(e){}
 }
 
 const IC={
@@ -170,7 +176,8 @@ const S={
   recoveryFlow:null,
   assocLottoFarmacoId:null,
   snoozedLotti: initialPersisted.snoozed,
-  dismissedNegatiTs: initialPersisted.negatiTs
+  dismissedNegatiTs: initialPersisted.negatiTs,
+  quarantenaLotti: initialPersisted.quarantena
 };
 
 const cfg=()=>S.config||{};
@@ -180,12 +187,33 @@ const fById=id=>farmaciTutti().find(f=>f.id===id)||{id,nome:id,sale:'',dosaggio:
 const me=()=>S.meUser||(S.meId?S.staff[S.meId]:null);
 const isCoord=()=>{const m=me();return !!m&&m.ruolo==='coordinatore';};
 
+// Lotti in quarantena (accantonati per reso) escludono le relative fiale dalla giacenza prelevabile
+function getQuarantenaIds(){
+  const set = new Set(Object.keys(S.quarantenaLotti || {}));
+  S.events.forEach(e => {
+    if(e.type === 'accantonamento_reso' && e.lottoId) set.add(e.lottoId);
+    if(e.type === 'conferma_reso_farmacia' && e.lottoId) set.add(e.lottoId);
+  });
+  return set;
+}
+
 function stock(){
   const b=S.base||{giacenza:{},ts:0}; const g={};
   farmaciTutti().forEach(f=>g[f.id]=(b.giacenza&&b.giacenza[f.id])||0);
   S.events.forEach(e=>{ if(e.ts>b.ts&&e.delta){ Object.keys(e.delta).forEach(k=>{ g[k]=(g[k]||0)+e.delta[k]; }); } });
+  
+  // Sottrae dalla giacenza operativa eventuali fiale presenti in lotti accantonati per reso (non ancora scaricate dal DB centrale)
+  const qIds = getQuarantenaIds();
+  (S.lotti || []).forEach(l => {
+    if(qIds.has(l.id) && !(S.quarantenaLotti[l.id] && S.quarantenaLotti[l.id].scaricatoDaStock)){
+      const fId = l.farmacoId || l.farmaco_id;
+      const rim = Number(l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0;
+      if(g[fId] != null) g[fId] = Math.max(0, g[fId] - rim);
+    }
+  });
   return g;
 }
+
 function codeAgeDays(){ const c=cfg(); if(!c.codiceDal) return 0; const a=new Date(c.codiceDal), b=new Date(); a.setHours(0,0,0,0); b.setHours(0,0,0,0); return Math.round((b-a)/86400000); }
 function codePill(){
   const d=codeAgeDays(), r=cfg().rotazioneGiorni||7;
@@ -202,8 +230,10 @@ function parseScadenza(str){
 }
 
 function getFefoPlan(farmacoId, qty){
+  const qIds = getQuarantenaIds();
   const lottiDisponibili = (S.lotti || [])
     .filter(l => {
+      if(qIds.has(l.id)) return false;
       const fId = l.farmacoId || l.farmaco_id;
       const rim = l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste;
       return String(fId).trim().toLowerCase() === String(farmacoId).trim().toLowerCase() && Number(rim) > 0;
@@ -253,13 +283,32 @@ async function addEvent(type,payload){
   const evt=Object.assign({id:uid(),ts,day:dayKey(ts),type,by:S.meId||'',byName:m.nome||''},payload||{});
   const items={}; items[evt.id]=evt;
   await Store.merge('log/'+evt.day,{day:evt.day,items});
+  if(REMOTE_ON) S.events.unshift(evt);
   return evt;
 }
 async function patchEvent(evt,patch){
   const items={}; items[evt.id]=patch;
   await Store.merge('log/'+(evt.day||dayKey(evt.ts)),{items});
 }
-const TYPE={chiave_presa:'Chiave presa',chiave_riposta:'Chiave riposta',chiave_passata:'Passaggio della chiave',prelievo:'Prelievo',carico:'Carico dalla farmacia',rettifica:'Rettifica giacenza',codice_cambiato:'Codice keybox cambiato',accesso_negato:'Accesso negato',personale_rimosso:'Personale eliminato',sicurezza_richiesta_otp:'Richiesta recupero PIN',sicurezza_pin_ripristinato:'PIN ripristinato con OTP',censimento_lotto:'Censimento lotto iniziale',gestione_scadenza:'Presa visione/posticipo scadenza',gestione_accessi_negati:'Presa visione accessi negati'};
+const TYPE={
+  chiave_presa:'Chiave presa',
+  chiave_riposta:'Chiave riposta',
+  chiave_passata:'Passaggio della chiave',
+  prelievo:'Prelievo',
+  carico:'Carico dalla farmacia',
+  rettifica:'Rettifica giacenza',
+  codice_cambiato:'Codice keybox cambiato',
+  accesso_negato:'Accesso negato',
+  personale_rimosso:'Personale eliminato',
+  sicurezza_richiesta_otp:'Richiesta recupero PIN',
+  sicurezza_pin_ripristinato:'PIN ripristinato con OTP',
+  censimento_lotto:'Censimento lotto iniziale',
+  gestione_scadenza:'Presa visione/posticipo scadenza',
+  gestione_accessi_negati:'Presa visione accessi negati',
+  verifica_turno:'Verifica giacenze (Cambio turno)',
+  accantonamento_reso:'Accantonamento per reso a farmacia',
+  conferma_reso_farmacia:'Reso consegnato a farmacia'
+};
 const MOTIVO={somministrazione:'Somministrazione',rottura:'Fiala rotta o caduta',altro:'Altro'};
 function deltaText(delta,sign){
   return Object.keys(delta||{}).map(k=>{ const n=delta[k]; return fById(k).nome+' '+(sign?(n>0?'+':'')+n:fiale(Math.abs(n))); }).join(', ');
@@ -278,6 +327,9 @@ function detailText(e,short){
       return [short?'':deltaText(e.delta), e.paziente, MOTIVO[e.motivo]||'', e.note].filter(Boolean).join(' · ') + lottiInfo;
     case 'carico': return [deltaText(e.delta,true),e.riferimento].filter(Boolean).join(' · ');
     case 'rettifica': return farmaciTutti().filter(f=>e.da&&e.a&&e.da[f.id]!==e.a[f.id]).map(f=>f.nome+' '+e.da[f.id]+' → '+e.a[f.id]).join(', ')+(e.motivo?' · '+e.motivo:'');
+    case 'verifica_turno': return e.nota || 'Corrispondenza giacenze confermata';
+    case 'accantonamento_reso': return e.nota || '';
+    case 'conferma_reso_farmacia': return e.nota || '';
     case 'censimento_lotto': return (e.nota||'');
     case 'gestione_scadenza': return (e.nota||'');
     case 'gestione_accessi_negati': return (e.nota||'');
@@ -312,6 +364,8 @@ function rowHTML(e){
       rowAction=`<div style="margin-top:6px;"><button class="btn btn-secondary btn-sm" data-act="markTranscribedById" data-id="${esc(e.id)}">Segna come trascritto</button></div>`;
     }
   }
+  if(e.type==='verifica_turno') meta.push('<span class="pill ok">Controllo turno</span>');
+  if(e.type==='accantonamento_reso'||e.type==='conferma_reso_farmacia') meta.push('<span class="pill warn">Reso farmacia</span>');
   if(e.type==='chiave_riposta'&&typeof e.durataMin==='number'&&e.durataMin>(cfg().timeoutChiaveMin||15)) meta.push('<span class="pill warn">Oltre il limite</span>');
   if(e.type==='accesso_negato'||/^sicurezza/.test(e.type)||e.type==='gestione_accessi_negati') meta.push('<span class="pill warn">Sicurezza</span>');
   if(e.gestito) meta.push(`<span class="pill">Presa visione: ${esc(first(e.gestito.byName))} ${hhmm(e.gestito.ts)}</span>`);
@@ -356,13 +410,14 @@ function alerts(){
   const k=S.key;
   if(k&&k.status==='out'&&mins(k.since)>tout) out.push({sev:'crit',t:'Chiave fuori dalla keybox da '+mins(k.since)+' minuti',s:'Presa da '+(k.byName||'?')+' alle '+hhmm(k.since)+'. Limite impostato: '+tout+' min.',acts:[['Registra come riposta','markKeyIn']]});
   
+  const qIds = getQuarantenaIds();
   const ackedLottiFromEvents = new Set();
   S.events.filter(e => e.type === 'gestione_scadenza' && e.lottoId).forEach(e => {
     if(e.untilTs && now < e.untilTs) S.snoozedLotti[e.lottoId] = e.untilTs;
     else if(!e.untilTs && now - e.ts < 30 * 86400000) ackedLottiFromEvents.add(e.lottoId);
   });
 
-  (S.lotti || []).filter(l => ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0).forEach(l => {
+  (S.lotti || []).filter(l => !qIds.has(l.id) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0).forEach(l => {
     const expTs = parseScadenza(l.scadenza);
     const rimaste = l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste;
     const snoozeUntil = S.snoozedLotti[l.id] || 0;
@@ -379,8 +434,8 @@ function alerts(){
           lottoId: l.id,
           sev:'crit', 
           t:`SCADUTO: ${f.nome} · Lotto ${l.lotto}`, 
-          s:`Scaduto da ${Math.abs(diffDays)} giorni (${l.scadenza}). Rimanenza: ${fiale(rimaste)}. Bloccare l'uso e avviare reso farmacia.`, 
-          acts:[['Presa visione / Avvia reso', 'ackLottoExp']]
+          s:`Scaduto da ${Math.abs(diffDays)} giorni (${l.scadenza}). Rimanenza: ${fiale(rimaste)}. Bloccare l'uso e accantonare per reso.`, 
+          acts:[['Accantona per reso', 'quarantenaLotto'], ['Presa visione', 'ackLottoExp']]
         });
       } else if(diffDays <= 30){
         out.push({
@@ -568,9 +623,10 @@ function viewAssocLottoModal(){
   const f = fById(S.assocLottoFarmacoId);
   const st = stock();
   const giacenzaAttuale = st[f.id] || 0;
+  const qIds = getQuarantenaIds();
   
   const fialeGiaLottizzate = (S.lotti || [])
-    .filter(l => (String(l.farmacoId||l.farmaco_id) === String(f.id)) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
+    .filter(l => !qIds.has(l.id) && (String(l.farmacoId||l.farmaco_id) === String(f.id)) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
     .reduce((acc, l) => acc + ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0), 0);
   
   const fialeDaLottizzare = Math.max(0, giacenzaAttuale - fialeGiaLottizzate);
@@ -698,8 +754,9 @@ function codePanel(){
 
 function drugRow(f,n){
   const low=n<=(f.soglia||0);
+  const qIds = getQuarantenaIds();
   const lottiFarmaco = (S.lotti || [])
-    .filter(l => (String(l.farmacoId||l.farmaco_id) === String(f.id)) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
+    .filter(l => !qIds.has(l.id) && (String(l.farmacoId||l.farmaco_id) === String(f.id)) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
     .sort((a,b)=>String(a.scadenza).localeCompare(String(b.scadenza)));
   const nextLotto = lottiFarmaco[0];
   const unitaScatola = (nextLotto && (nextLotto.unitaPerScatola || nextLotto.unita_per_scatola)) || f.unitaPerScatola || 5;
@@ -724,11 +781,20 @@ function drugRow(f,n){
 
 function viewHome(){
   const k=S.key; const mine=!!(k&&k.status==='out'&&k.by===S.meId); const st=stock();
-  const recent=S.events.filter(e=>['prelievo','carico','rettifica','censimento_lotto'].includes(e.type)).slice(0,5);
+  const recent=S.events.filter(e=>['prelievo','carico','rettifica','censimento_lotto','verifica_turno'].includes(e.type)).slice(0,5);
+  const lastCheck = S.events.find(e=>e.type==='verifica_turno');
+
   return `${keyStatusHTML(false)}
     ${codePanel()}
     ${mine?`<div class="block"><button class="btn btn-primary btn-lg btn-block" data-act="startPrelievo">Registra un prelievo</button><button class="btn btn-secondary btn-block" data-act="returnKey">Ho rimesso la chiave nella keybox</button></div>`:`<p class="hint">Per registrare un prelievo, prima mostra il codice e prendi la chiave.</p>`}
-    <section class="block"><div class="sec-h"><h2>In cassetta</h2><span class="muted" style="font-size:14px">secondo il registro digitale</span></div><div class="drugs">${farmaci().map(f=>drugRow(f,st[f.id]||0)).join('')}</div></section>
+    <section class="block">
+      <div class="sec-h"><h2>In cassetta</h2><span class="muted" style="font-size:14px">secondo il registro digitale</span></div>
+      <div class="drugs">${farmaci().map(f=>drugRow(f,st[f.id]||0)).join('')}</div>
+      <div style="margin-top:6px;">
+        <button class="btn btn-secondary btn-block" data-act="verificaTurno">✓ Conferma verifica giacenze (Cambio turno)</button>
+        ${lastCheck ? `<p class="fine" style="text-align:center;margin-top:4px;">Ultima verifica turno: <b>${ddmm(lastCheck.ts)} alle ${hhmm(lastCheck.ts)}</b> · ${esc(resolveOperator(lastCheck))}</p>` : ''}
+      </div>
+    </section>
     ${recent.length?`<section class="block"><h2>Ultimi movimenti</h2><div class="panel" style="gap:0;padding-block:4px"><div class="rows">${recent.map(rowHTML).join('')}</div></div></section>`:''}`;
 }
 
@@ -893,9 +959,15 @@ function tabStato(){
   const today=dayKey(Date.now()); const tEv=S.events.filter(e=>dayKey(e.ts)===today);
   const tPrel={}; farmaci().forEach(f=>tPrel[f.id]=0); tEv.filter(e=>e.type==='prelievo').forEach(e=>Object.keys(e.delta||{}).forEach(k=>tPrel[k]-=e.delta[k]));
   
+  const qIds = getQuarantenaIds();
   const lottiAttivi = (S.lotti || [])
-    .filter(l => ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
+    .filter(l => !qIds.has(l.id) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
     .sort((a,b)=>String(a.scadenza).localeCompare(String(b.scadenza)));
+
+  // Lotti accantonati per reso (non ancora confermati come ritirati dalla farmacia)
+  const lottiAccantonati = (S.lotti || [])
+    .filter(l => qIds.has(l.id) && !(S.quarantenaLotti[l.id] && S.quarantenaLotti[l.id].ritiratoFarmacia))
+    .filter(l => !S.events.some(e => e.type === 'conferma_reso_farmacia' && e.lottoId === l.id));
 
   return `<div class="grid2">
     <div class="block">
@@ -910,7 +982,7 @@ function tabStato(){
           <h2>Scatole e Lotti in cassaforte (per scadenza)</h2>
           <span class="pill info">${lottiAttivi.length} attivi</span>
         </div>
-        <p class="fine">Elenco ordinato per priorità di scadenza. Il prelievo scala automaticamente la confezione con scadenza più vicina.</p>
+        <p class="fine">Elenco ordinato per priorità di scadenza. Puoi accantonare un lotto scaduto o danneggiato per il reso alla farmacia.</p>
         
         <div style="margin-bottom:12px;">
           <div style="font-weight:600;font-size:13px;margin-bottom:6px;">Associa lotto/scadenza a giacenza già esistente:</div>
@@ -920,13 +992,13 @@ function tabStato(){
         </div>
 
         ${lottiAttivi.length ? `<div class="tbl"><table>
-          <thead><tr><th>Farmaco</th><th>Lotto</th><th>Scadenza</th><th>Formato</th><th class="num">Fiale rimaste</th></tr></thead>
+          <thead><tr><th>Farmaco</th><th>Lotto</th><th>Scadenza</th><th>Formato</th><th class="num">Rimaste</th><th>Azione</th></tr></thead>
           <tbody>
             ${lottiAttivi.map(l=>{
               const f = fById(l.farmacoId || l.farmaco_id);
               const expTs = parseScadenza(l.scadenza);
               const days = expTs ? Math.ceil((expTs - Date.now())/86400000) : null;
-              const pill = days && days <= 30 ? '<span class="pill warn" style="margin-left:4px;">In scadenza</span>' : '';
+              const pill = days != null && days <= 0 ? '<span class="pill crit" style="margin-left:4px;">Scaduto</span>' : (days != null && days <= 30 ? '<span class="pill warn" style="margin-left:4px;">In scadenza</span>' : '');
               const rimaste = l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste;
               const totali = l.fialeTotali != null ? l.fialeTotali : l.fiale_totali;
               const unitaScatola = l.unitaPerScatola || l.unita_per_scatola || f.unitaPerScatola || 5;
@@ -936,11 +1008,37 @@ function tabStato(){
                 <td>${esc(l.scadenza)}${pill}</td>
                 <td><small>Scatola da ${unitaScatola}</small></td>
                 <td class="num"><b>${rimaste}</b> <small>/ ${totali}</small></td>
+                <td><button class="btn btn-quiet btn-sm" data-act="quarantenaLotto" data-lotto-id="${esc(l.id)}" title="Escludi dai prelievi e sposta nei resi">Accantona reso</button></td>
               </tr>`;
             }).join('')}
           </tbody>
         </table></div>` : '<p class="sub">Nessun lotto con fiale registrato.</p>'}
       </section>
+
+      ${lottiAccantonati.length ? `
+      <section class="panel" style="border-left:4px solid #D97706;">
+        <div class="sec-h">
+          <h2>Farmaci accantonati / Da rendere alla farmacia</h2>
+          <span class="pill warn">${lottiAccantonati.length} in attesa</span>
+        </div>
+        <p class="fine">Questi lotti sono bloccati e non compaiono più tra le fiale prelevabili dagli infermieri in reparto.</p>
+        <div class="tbl"><table>
+          <thead><tr><th>Farmaco</th><th>Lotto</th><th>Scadenza</th><th class="num">Fiale</th><th>Stato reso</th></tr></thead>
+          <tbody>
+            ${lottiAccantonati.map(l=>{
+              const f = fById(l.farmacoId || l.farmaco_id);
+              const rimaste = l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste;
+              return `<tr>
+                <td><b>${esc(f.nome)}</b></td>
+                <td><span class="mono">${esc(l.lotto)}</span></td>
+                <td>${esc(l.scadenza)}</td>
+                <td class="num"><b>${rimaste}</b></td>
+                <td><button class="btn btn-primary btn-sm" data-act="confermaResoFarmacia" data-lotto-id="${esc(l.id)}">Conferma consegna a farmacia</button></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table></div>
+      </section>` : ''}
     </div>
 
     <div class="block">
@@ -984,7 +1082,7 @@ function tabSegnalazioni(){
   }).join('')}</div>`;
 }
 
-const FILTERS=[['tutti','Tutti',()=>true],['chiave','Chiave',e=>/^chiave/.test(e.type)],['prelievo','Prelievi',e=>e.type==='prelievo'],['datrascrivere','Da trascrivere',e=>e.type==='prelievo'&&!e.trascritto],['giacenze','Carichi e rettifiche',e=>e.type==='carico'||e.type==='rettifica'||e.type==='censimento_lotto'],['sicurezza','Codice, accessi e personale',e=>e.type==='codice_cambiato'||e.type==='accesso_negato'||e.type==='personale_rimosso'||/^sicurezza/.test(e.type)||e.type==='gestione_scadenza'||e.type==='gestione_accessi_negati']];
+const FILTERS=[['tutti','Tutti',()=>true],['chiave','Chiave',e=>/^chiave/.test(e.type)],['prelievo','Prelievi',e=>e.type==='prelievo'],['datrascrivere','Da trascrivere',e=>e.type==='prelievo'&&!e.trascritto],['giacenze','Carichi, rettifiche e turni',e=>e.type==='carico'||e.type==='rettifica'||e.type==='censimento_lotto'||e.type==='verifica_turno'||e.type==='accantonamento_reso'||e.type==='conferma_reso_farmacia'],['sicurezza','Codice, accessi e personale',e=>e.type==='codice_cambiato'||e.type==='accesso_negato'||e.type==='personale_rimosso'||/^sicurezza/.test(e.type)||e.type==='gestione_scadenza'||e.type==='gestione_accessi_negati']];
 
 function tabRegistro(){
   const flt=(FILTERS.find(f=>f[0]===S.filter)||FILTERS[0])[2];
@@ -1026,7 +1124,7 @@ function tabIndicatori(){
   const I=indicators(S.period); const tout=cfg().timeoutChiaveMin||15;
   const tras=I.prel?Math.round(I.tras/I.prel*100):null;
   const tPill=tras==null?'':tras>=98?'<span class="pill ok">In linea</span>':'<span class="pill warn">'+(I.prel-I.tras)+' da trascrivere</span>';
-  return `<div class="sec-h"><div><h2>Indicatori di processo ed esito</h2><p class="fine">Per l’audit clinico con l’équipe: misurano il sistema, non le persone.</p></div><div class="seg" role="group" aria-label="Periodo">${[7,14,30,90,365].map(p=>`<button data-act="setPeriod" data-p="${p}" aria-pressed="${S.period===p}">${p===365?'1 anno':p+' giorni'}</button>`).join('')}</div></div>
+  return `<div class="sec-h"><div><h2>Indicatori</h2><p class="fine">Per l’audit clinico con l’équipe: misurano il sistema, non le persone.</p></div><div class="seg" role="group" aria-label="Periodo">${[7,14,30,90,365].map(p=>`<button data-act="setPeriod" data-p="${p}" aria-pressed="${S.period===p}">${p===365?'1 anno':p+' giorni'}</button>`).join('')}</div></div>
     <div class="kpis">
       ${kpi('Trascrizione sul registro',tras==null?'—':tras+'<small>%</small>',I.tras+' prelievi su '+I.prel+' confermati',tPill)}
       ${kpi('Chiave fuori, tempo medio',I.rit?Math.round(I.avg)+'<small> min</small>':'—',I.over?(I.over===1?'1 volta':I.over+' volte')+' oltre '+tout+' min':'mai oltre '+tout+' min',I.over?'<span class="pill warn">Da approfondire</span>':'')}
@@ -1315,6 +1413,7 @@ const LocalApi={
     await Store.del('app/key'); await Store.del('app/state'); await Store.del('app/config');
     localStorage.removeItem(LS_SNOOZE_KEY);
     localStorage.removeItem(LS_NEGATI_KEY);
+    localStorage.removeItem(LS_QUARANTENA_KEY);
   }
 };
 
@@ -1426,6 +1525,7 @@ const RemoteApi={
     S.token=null; S.publicInfo=null; clearRemoteData(); 
     localStorage.removeItem(LS_SNOOZE_KEY);
     localStorage.removeItem(LS_NEGATI_KEY);
+    localStorage.removeItem(LS_QUARANTENA_KEY);
     await loadPublic(); 
   }
 };
@@ -1451,6 +1551,61 @@ const A={
       pinInput.value = '';
       pinInput.focus();
     }
+  },
+  async verificaTurno(){
+    const st = stock();
+    const riepilogo = farmaci().map(f => `${f.nome}: ${st[f.id]||0}`).join(', ');
+    await addEvent('verifica_turno', {
+      nota: `Corrispondenza giacenze confermata (${riepilogo})`
+    });
+    render();
+    toast('Verifica giacenze al cambio turno registrata nel log.');
+  },
+  async quarantenaLotto(d){
+    const lottoId = d.lottoId || d.id.replace('exp_','');
+    const l = (S.lotti || []).find(x => x.id === lottoId);
+    if(!l) return;
+    const f = fById(l.farmacoId || l.farmaco_id);
+    const rimaste = Number(l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0;
+
+    S.quarantenaLotti[lottoId] = { ts: Date.now(), ritiratoFarmacia: false };
+    persistQuarantena();
+
+    await addEvent('accantonamento_reso', {
+      lottoId,
+      nota: `Accantonato per reso a farmacia: ${f.nome} · Lotto ${l.lotto} (${fiale(rimaste)})`
+    });
+    render();
+    toast(`Lotto ${l.lotto} accantonato nei resi e rimosso dai prelievi.`);
+  },
+  async confermaResoFarmacia(d){
+    const lottoId = d.lottoId;
+    const l = (S.lotti || []).find(x => x.id === lottoId);
+    if(!l) return;
+    const f = fById(l.farmacoId || l.farmaco_id);
+    const rimaste = Number(l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0;
+
+    if(S.quarantenaLotti[lottoId]){
+      S.quarantenaLotti[lottoId].ritiratoFarmacia = true;
+      S.quarantenaLotti[lottoId].scaricatoDaStock = true;
+    }
+    persistQuarantena();
+
+    // Se ci sono fiale rimaste da scaricare dalla base
+    if(rimaste > 0){
+      const currentStock = stock();
+      const targetAfter = Object.assign({}, currentStock);
+      // Dato che stock() aveva già detratto il lotto in quarantena, sincronizziamo la base
+      await Api.rettifica(targetAfter, `Reso a farmacia lotto ${l.lotto} (${fiale(rimaste)})`);
+    }
+
+    await addEvent('conferma_reso_farmacia', {
+      lottoId,
+      nota: `Consegnato a farmacia ospedaliera per smaltimento/reso: ${f.nome} · Lotto ${l.lotto} (${fiale(rimaste)})`
+    });
+
+    render();
+    toast('Reso alla farmacia confermato e archiviato nel registro.');
   },
   async takeKey(d){
     const k=S.key; const mine=!!(k&&k.status==='out'&&k.by===S.meId); const other=!!(k&&k.status==='out'&&!mine);
