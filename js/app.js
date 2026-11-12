@@ -11,7 +11,6 @@ const LS_KEY='keybox-stupefacenti-v1';
 const SS_KEY='keybox-sessione-v1';
 const LS_SNOOZE_KEY='keybox-snoozed-lotti-v1';
 const LS_NEGATI_KEY='keybox-dismissed-negati-ts';
-const LS_QUARANTENA_KEY='keybox-quarantena-lotti-v1';
 
 const CODE_SECONDS=30;
 const $=(s,r)=>(r||document).querySelector(s);
@@ -36,7 +35,6 @@ function val(id){const el=document.getElementById(id);return el?String(el.value)
 function loadPersistedState(){
   let snoozed = {};
   let negatiTs = 0;
-  let quarantena = {};
   try {
     const rawS = localStorage.getItem(LS_SNOOZE_KEY);
     if(rawS) snoozed = JSON.parse(rawS) || {};
@@ -45,11 +43,7 @@ function loadPersistedState(){
     const rawN = localStorage.getItem(LS_NEGATI_KEY);
     if(rawN) negatiTs = Number(rawN) || 0;
   } catch(e){}
-  try {
-    const rawQ = localStorage.getItem(LS_QUARANTENA_KEY);
-    if(rawQ) quarantena = JSON.parse(rawQ) || {};
-  } catch(e){}
-  return { snoozed, negatiTs, quarantena };
+  return { snoozed, negatiTs };
 }
 
 function persistSnooze(id, until){
@@ -60,10 +54,6 @@ function persistSnooze(id, until){
 function persistDismissNegati(ts){
   S.dismissedNegatiTs = ts;
   try { localStorage.setItem(LS_NEGATI_KEY, String(ts)); } catch(e){}
-}
-
-function persistQuarantena(){
-  try { localStorage.setItem(LS_QUARANTENA_KEY, JSON.stringify(S.quarantenaLotti)); } catch(e){}
 }
 
 const IC={
@@ -176,8 +166,7 @@ const S={
   recoveryFlow:null,
   assocLottoFarmacoId:null,
   snoozedLotti: initialPersisted.snoozed,
-  dismissedNegatiTs: initialPersisted.negatiTs,
-  quarantenaLotti: initialPersisted.quarantena
+  dismissedNegatiTs: initialPersisted.negatiTs
 };
 
 const cfg=()=>S.config||{};
@@ -187,30 +176,16 @@ const fById=id=>farmaciTutti().find(f=>f.id===id)||{id,nome:id,sale:'',dosaggio:
 const me=()=>S.meUser||(S.meId?S.staff[S.meId]:null);
 const isCoord=()=>{const m=me();return !!m&&m.ruolo==='coordinatore';};
 
-// Lotti in quarantena (accantonati per reso) escludono le relative fiale dalla giacenza prelevabile
-function getQuarantenaIds(){
-  const set = new Set(Object.keys(S.quarantenaLotti || {}));
-  S.events.forEach(e => {
-    if(e.type === 'accantonamento_reso' && e.lottoId) set.add(e.lottoId);
-    if(e.type === 'conferma_reso_farmacia' && e.lottoId) set.add(e.lottoId);
-  });
-  return set;
+function isLottoAccantonato(l){
+  if(!l) return false;
+  if(l.stato === 'accantonato_reso' || l.stato === 'reso_consegnato') return true;
+  return S.events.some(e => (e.type === 'accantonamento_reso' || e.type === 'conferma_reso_farmacia') && e.lottoId === l.id);
 }
 
 function stock(){
   const b=S.base||{giacenza:{},ts:0}; const g={};
   farmaciTutti().forEach(f=>g[f.id]=(b.giacenza&&b.giacenza[f.id])||0);
   S.events.forEach(e=>{ if(e.ts>b.ts&&e.delta){ Object.keys(e.delta).forEach(k=>{ g[k]=(g[k]||0)+e.delta[k]; }); } });
-  
-  // Sottrae dalla giacenza operativa eventuali fiale presenti in lotti accantonati per reso (non ancora scaricate dal DB centrale)
-  const qIds = getQuarantenaIds();
-  (S.lotti || []).forEach(l => {
-    if(qIds.has(l.id) && !(S.quarantenaLotti[l.id] && S.quarantenaLotti[l.id].scaricatoDaStock)){
-      const fId = l.farmacoId || l.farmaco_id;
-      const rim = Number(l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0;
-      if(g[fId] != null) g[fId] = Math.max(0, g[fId] - rim);
-    }
-  });
   return g;
 }
 
@@ -230,10 +205,9 @@ function parseScadenza(str){
 }
 
 function getFefoPlan(farmacoId, qty){
-  const qIds = getQuarantenaIds();
   const lottiDisponibili = (S.lotti || [])
     .filter(l => {
-      if(qIds.has(l.id)) return false;
+      if(isLottoAccantonato(l)) return false;
       const fId = l.farmacoId || l.farmaco_id;
       const rim = l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste;
       return String(fId).trim().toLowerCase() === String(farmacoId).trim().toLowerCase() && Number(rim) > 0;
@@ -279,11 +253,14 @@ function getFefoPlan(farmacoId, qty){
 }
 
 async function addEvent(type,payload){
+  if(REMOTE_ON){
+    await RemoteApi.act('log_evento', Object.assign({ type }, payload || {}));
+    return;
+  }
   const ts=Date.now(); const m=me()||{};
   const evt=Object.assign({id:uid(),ts,day:dayKey(ts),type,by:S.meId||'',byName:m.nome||''},payload||{});
   const items={}; items[evt.id]=evt;
   await Store.merge('log/'+evt.day,{day:evt.day,items});
-  if(REMOTE_ON) S.events.unshift(evt);
   return evt;
 }
 async function patchEvent(evt,patch){
@@ -410,14 +387,13 @@ function alerts(){
   const k=S.key;
   if(k&&k.status==='out'&&mins(k.since)>tout) out.push({sev:'crit',t:'Chiave fuori dalla keybox da '+mins(k.since)+' minuti',s:'Presa da '+(k.byName||'?')+' alle '+hhmm(k.since)+'. Limite impostato: '+tout+' min.',acts:[['Registra come riposta','markKeyIn']]});
   
-  const qIds = getQuarantenaIds();
   const ackedLottiFromEvents = new Set();
   S.events.filter(e => e.type === 'gestione_scadenza' && e.lottoId).forEach(e => {
     if(e.untilTs && now < e.untilTs) S.snoozedLotti[e.lottoId] = e.untilTs;
     else if(!e.untilTs && now - e.ts < 30 * 86400000) ackedLottiFromEvents.add(e.lottoId);
   });
 
-  (S.lotti || []).filter(l => !qIds.has(l.id) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0).forEach(l => {
+  (S.lotti || []).filter(l => !isLottoAccantonato(l) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0).forEach(l => {
     const expTs = parseScadenza(l.scadenza);
     const rimaste = l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste;
     const snoozeUntil = S.snoozedLotti[l.id] || 0;
@@ -623,10 +599,9 @@ function viewAssocLottoModal(){
   const f = fById(S.assocLottoFarmacoId);
   const st = stock();
   const giacenzaAttuale = st[f.id] || 0;
-  const qIds = getQuarantenaIds();
   
   const fialeGiaLottizzate = (S.lotti || [])
-    .filter(l => !qIds.has(l.id) && (String(l.farmacoId||l.farmaco_id) === String(f.id)) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
+    .filter(l => !isLottoAccantonato(l) && (String(l.farmacoId||l.farmaco_id) === String(f.id)) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
     .reduce((acc, l) => acc + ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0), 0);
   
   const fialeDaLottizzare = Math.max(0, giacenzaAttuale - fialeGiaLottizzate);
@@ -754,9 +729,8 @@ function codePanel(){
 
 function drugRow(f,n){
   const low=n<=(f.soglia||0);
-  const qIds = getQuarantenaIds();
   const lottiFarmaco = (S.lotti || [])
-    .filter(l => !qIds.has(l.id) && (String(l.farmacoId||l.farmaco_id) === String(f.id)) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
+    .filter(l => !isLottoAccantonato(l) && (String(l.farmacoId||l.farmaco_id) === String(f.id)) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
     .sort((a,b)=>String(a.scadenza).localeCompare(String(b.scadenza)));
   const nextLotto = lottiFarmaco[0];
   const unitaScatola = (nextLotto && (nextLotto.unitaPerScatola || nextLotto.unita_per_scatola)) || f.unitaPerScatola || 5;
@@ -959,15 +933,16 @@ function tabStato(){
   const today=dayKey(Date.now()); const tEv=S.events.filter(e=>dayKey(e.ts)===today);
   const tPrel={}; farmaci().forEach(f=>tPrel[f.id]=0); tEv.filter(e=>e.type==='prelievo').forEach(e=>Object.keys(e.delta||{}).forEach(k=>tPrel[k]-=e.delta[k]));
   
-  const qIds = getQuarantenaIds();
   const lottiAttivi = (S.lotti || [])
-    .filter(l => !qIds.has(l.id) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
+    .filter(l => !isLottoAccantonato(l) && ((l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0) > 0)
     .sort((a,b)=>String(a.scadenza).localeCompare(String(b.scadenza)));
 
-  // Lotti accantonati per reso (non ancora confermati come ritirati dalla farmacia)
   const lottiAccantonati = (S.lotti || [])
-    .filter(l => qIds.has(l.id) && !(S.quarantenaLotti[l.id] && S.quarantenaLotti[l.id].ritiratoFarmacia))
-    .filter(l => !S.events.some(e => e.type === 'conferma_reso_farmacia' && e.lottoId === l.id));
+    .filter(l => {
+      if(l.stato === 'reso_consegnato') return false;
+      if(S.events.some(e => e.type === 'conferma_reso_farmacia' && e.lottoId === l.id)) return false;
+      return l.stato === 'accantonato_reso' || S.events.some(e => e.type === 'accantonamento_reso' && e.lottoId === l.id);
+    });
 
   return `<div class="grid2">
     <div class="block">
@@ -1376,6 +1351,7 @@ const LocalApi={
           fialeTotali: l.fiale,
           fialeRimaste: l.fiale,
           unitaPerScatola: l.unitaPerScatola || 5,
+          stato: 'attivo',
           caricatoTs: Date.now()
         });
       });
@@ -1391,11 +1367,35 @@ const LocalApi={
       fialeTotali: fiale,
       fialeRimaste: fiale,
       unitaPerScatola: unitaPerScatola || 5,
+      stato: 'attivo',
       caricatoTs: Date.now()
     });
     await addEvent('censimento_lotto',{
       nota: `Associazione lotto ${lotto} (${scadenza}, ${fiale} fiale, scatole da ${unitaPerScatola}) a ${fById(farmacoId).nome}`
     });
+  },
+  async verificaTurno(nota){
+    await addEvent('verifica_turno',{ nota });
+  },
+  async accantonaReso(lottoId, nota){
+    const l = S.lotti.find(x => x.id === lottoId);
+    if(l){
+      l.stato = 'accantonato_reso';
+      const st = stock();
+      const fId = l.farmacoId || l.farmaco_id;
+      const rim = Number(l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0;
+      st[fId] = Math.max(0, (st[fId]||0) - rim);
+      await Store.set('app/state',{giacenza:st,ts:Date.now(),fonte:'accantonamento_reso'});
+    }
+    await addEvent('accantonamento_reso',{ lottoId, nota });
+  },
+  async confermaResoFarmacia(lottoId, nota){
+    const l = S.lotti.find(x => x.id === lottoId);
+    if(l){
+      l.stato = 'reso_consegnato';
+      l.fialeRimaste = 0;
+    }
+    await addEvent('conferma_reso_farmacia',{ lottoId, nota });
   },
   ack(e,note){ return patchEvent(e,{gestito:{by:S.meId,byName:me().nome,ts:Date.now(),note}}); },
   async codeSet(code){ await Store.merge('app/config',{codice:code,codiceDal:Date.now(),codiceDa:S.meId,codiceDaNome:me().nome}); await addEvent('codice_cambiato',{}); },
@@ -1413,7 +1413,6 @@ const LocalApi={
     await Store.del('app/key'); await Store.del('app/state'); await Store.del('app/config');
     localStorage.removeItem(LS_SNOOZE_KEY);
     localStorage.removeItem(LS_NEGATI_KEY);
-    localStorage.removeItem(LS_QUARANTENA_KEY);
   }
 };
 
@@ -1488,6 +1487,9 @@ const RemoteApi={
   async transcribed(e){ await RemoteApi.act('transcribed',{id:e.id}); return S.events.find(x=>x.id===e.id)||Object.assign({},e,{trascritto:true,trascrittoTs:Date.now()}); },
   carico(delta,rif,lotti){ return RemoteApi.act('carico',{delta,riferimento:rif,lotti}); },
   rettifica(a,motivo){ return RemoteApi.act('rettifica',{a,motivo}); },
+  verificaTurno(nota){ return RemoteApi.act('verifica_turno',{nota}); },
+  accantonaReso(lottoId, nota){ return RemoteApi.act('accantona_reso',{lotto_id: lottoId, nota}); },
+  confermaResoFarmacia(lottoId, nota){ return RemoteApi.act('conferma_reso_farmacia',{lotto_id: lottoId, nota}); },
   async associaLottoEsistente(farmacoId, lotto, scadenza, fiale, unitaPerScatola){
     try {
       const res = await rpc('kb_associa_lotto_esistente', {
@@ -1525,7 +1527,6 @@ const RemoteApi={
     S.token=null; S.publicInfo=null; clearRemoteData(); 
     localStorage.removeItem(LS_SNOOZE_KEY);
     localStorage.removeItem(LS_NEGATI_KEY);
-    localStorage.removeItem(LS_QUARANTENA_KEY);
     await loadPublic(); 
   }
 };
@@ -1555,11 +1556,9 @@ const A={
   async verificaTurno(){
     const st = stock();
     const riepilogo = farmaci().map(f => `${f.nome}: ${st[f.id]||0}`).join(', ');
-    await addEvent('verifica_turno', {
-      nota: `Corrispondenza giacenze confermata (${riepilogo})`
-    });
+    await Api.verificaTurno(`Corrispondenza giacenze confermata (${riepilogo})`);
     render();
-    toast('Verifica giacenze al cambio turno registrata nel log.');
+    toast('Verifica giacenze al cambio turno registrata nel database.');
   },
   async quarantenaLotto(d){
     const lottoId = d.lottoId || d.id.replace('exp_','');
@@ -1568,13 +1567,7 @@ const A={
     const f = fById(l.farmacoId || l.farmaco_id);
     const rimaste = Number(l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0;
 
-    S.quarantenaLotti[lottoId] = { ts: Date.now(), ritiratoFarmacia: false };
-    persistQuarantena();
-
-    await addEvent('accantonamento_reso', {
-      lottoId,
-      nota: `Accantonato per reso a farmacia: ${f.nome} · Lotto ${l.lotto} (${fiale(rimaste)})`
-    });
+    await Api.accantonaReso(lottoId, `Accantonato per reso a farmacia: ${f.nome} · Lotto ${l.lotto} (${fiale(rimaste)})`);
     render();
     toast(`Lotto ${l.lotto} accantonato nei resi e rimosso dai prelievi.`);
   },
@@ -1585,27 +1578,9 @@ const A={
     const f = fById(l.farmacoId || l.farmaco_id);
     const rimaste = Number(l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0;
 
-    if(S.quarantenaLotti[lottoId]){
-      S.quarantenaLotti[lottoId].ritiratoFarmacia = true;
-      S.quarantenaLotti[lottoId].scaricatoDaStock = true;
-    }
-    persistQuarantena();
-
-    // Se ci sono fiale rimaste da scaricare dalla base
-    if(rimaste > 0){
-      const currentStock = stock();
-      const targetAfter = Object.assign({}, currentStock);
-      // Dato che stock() aveva già detratto il lotto in quarantena, sincronizziamo la base
-      await Api.rettifica(targetAfter, `Reso a farmacia lotto ${l.lotto} (${fiale(rimaste)})`);
-    }
-
-    await addEvent('conferma_reso_farmacia', {
-      lottoId,
-      nota: `Consegnato a farmacia ospedaliera per smaltimento/reso: ${f.nome} · Lotto ${l.lotto} (${fiale(rimaste)})`
-    });
-
+    await Api.confermaResoFarmacia(lottoId, `Consegnato a farmacia ospedaliera per smaltimento/reso: ${f.nome} · Lotto ${l.lotto} (${fiale(rimaste)})`);
     render();
-    toast('Reso alla farmacia confermato e archiviato nel registro.');
+    toast('Reso alla farmacia confermato e archiviato nel database.');
   },
   async takeKey(d){
     const k=S.key; const mine=!!(k&&k.status==='out'&&k.by===S.meId); const other=!!(k&&k.status==='out'&&!mine);
@@ -2097,7 +2072,6 @@ document.addEventListener('pointermove',e=>{
     if(Math.abs(dx)>8&&Math.abs(dx)>Math.abs(dy)*1.2){ SW.drag=true; SW.w.classList.add('drag'); SW.el.style.transition='none'; try{ SW.el.setPointerCapture(e.pointerId); }catch(_){} }
     else { if(Math.abs(dy)>10) SW.el=null; return; }
   }
-  SW.el=row;
   SW.el.style.transform='translateX('+Math.max(-DEL_W-28,Math.min(0,SW.base+dx))+'px)';
 });
 function endSwipe(e){
