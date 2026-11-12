@@ -158,7 +158,6 @@ const S={
   config:null, base:null, key:null, staff:{}, events:[], lotti:[],
   repartiOverview:[],
   meId:null, meUser:null, view:'home', tab:'stato', flow:null,
-  selectedRepartoId:null,
   newRepartoModal:false,
   codeShownUntil:0, confirmTake:false,
   loginErr:'', fails:0, lockUntil:0, lastActivity:Date.now(),
@@ -591,7 +590,7 @@ function viewNewRepartoModal(){
       <label class="field"><span>Nome e cognome</span><input id="nr-nome" type="text" maxlength="60" placeholder="Es. Dott.ssa Elena Rossi" required></label>
       <label class="field"><span>Email istituzionale (per recupero PIN)</span><input id="nr-email" type="email" maxlength="80" placeholder="nome.cognome@ao-siena.toscana.it" required></label>
       <div class="two">
-        <label class="field"><span>Matricola</span><input id="nr-mat" type="text" inputmode="numeric" maxlength="12" placeholder="Es. 5566" required></label>
+        <label class="field"><span>Matricola (univoca)</span><input id="nr-mat" type="text" inputmode="numeric" maxlength="12" placeholder="Es. 5566" required></label>
         <label class="field"><span>PIN provvisorio (4-6 cifre)</span><input id="nr-pin" type="password" inputmode="numeric" maxlength="6" placeholder="Es. 1234" required></label>
       </div>
       <div class="eyebrow">Configurazione Iniziale Keybox</div>
@@ -761,24 +760,14 @@ function viewSetup(){
 function viewLogin(){
   const c=cfg(); const locked=S.lockUntil>Date.now();
   const repartiList = (S.publicInfo && S.publicInfo.reparti) || [];
-  const activeRepId = S.selectedRepartoId || (repartiList[0] && repartiList[0].id) || 1;
-  const currentRepObj = repartiList.find(r => Number(r.id) === Number(activeRepId));
-  const repName = currentRepObj ? currentRepObj.reparto : (c.reparto || '');
+  const subTitle = repartiList.length > 1 ? 'Accesso operatori e coordinamento' : (c.reparto || '');
 
   return `<main class="wrap">
     <div class="login-hero">
       <span class="brand-mark">${IC.box}</span>
-      <div><h1>Keybox stupefacenti</h1><p class="lead">${esc(repName)}</p></div>
+      <div><h1>Keybox stupefacenti</h1><p class="lead">${esc(subTitle)}</p></div>
     </div>
     <form class="panel" data-submit="login" novalidate>
-      ${repartiList.length > 1 ? `
-        <label class="field">
-          <span>Reparto / Unità Operativa</span>
-          <select id="l-rep" data-act="changeLoginRep">
-            ${repartiList.map(r => `<option value="${r.id}" ${Number(r.id)===Number(activeRepId)?'selected':''}>${esc(r.reparto)}</option>`).join('')}
-          </select>
-        </label>
-      ` : ''}
       <label class="field"><span>Matricola</span><input id="l-mat" type="text" autocomplete="username" maxlength="16" value="${esc(S.loginMat||'')}"></label>
       <label class="field"><span>PIN personale</span><input id="l-pin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="6"></label>
       <p class="err" id="l-err">${esc(locked?'Troppi tentativi errati. Riprova tra '+Math.ceil((S.lockUntil-Date.now())/1000)+' secondi.':S.loginErr)}</p>
@@ -1632,8 +1621,8 @@ const RemoteApi={
     if(r&&r.state) applyRemote(r.state);
     return r?r.result:null;
   },
-  async login(mat,pin,repId){
-    const r=await rpc('kb_login',{p_mat:mat,p_pin:pin,p_reparto_id:repId?Number(repId):null});
+  async login(mat,pin){
+    const r=await rpc('kb_login',{p_mat:mat,p_pin:pin,p_reparto_id:null});
     if(r&&r.error) throw new UserError(r.error);
     S.token=r.token;
     await RemoteApi.refresh(true);
@@ -1912,9 +1901,7 @@ const SUBMIT={
   async login(){
     if(S.lockUntil>Date.now()) return;
     const mat=val('l-mat'), pin=val('l-pin');
-    const repSel = document.getElementById('l-rep');
-    const repId = repSel ? repSel.value : S.selectedRepartoId;
-    try{ await Api.login(mat,pin,repId); }
+    try{ await Api.login(mat,pin); }
     catch(e){
       if(!(e&&e.user)) throw e;
       S.fails++; S.loginErr=e.user; S.loginMat=mat;
@@ -2141,11 +2128,6 @@ document.addEventListener('input',e=>{
 });
 document.addEventListener('change',e=>{
   const el=e.target;
-  if(el.id === 'l-rep'){
-    S.selectedRepartoId = Number(el.value);
-    render();
-    return;
-  }
   if(el.dataset&&el.dataset.verify&&S.flow){
     S.flow.verified[el.dataset.verify]=el.checked;
     const sel=farmaci().filter(f=>(S.flow.qty[f.id]||0)>0); const btn=$('#confirmBtn'); if(btn) btn.disabled=!sel.every(f=>S.flow.verified[f.id]);
