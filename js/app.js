@@ -366,6 +366,7 @@ function rowHTML(e){
 }
 
 function periodStart(days){ const s=new Date(); s.setHours(0,0,0,0); s.setDate(s.getDate()-(days-1)); return s.getTime(); }
+
 function indicators(days){
   const from=periodStart(days), tout=cfg().timeoutChiaveMin||15;
   const ev=S.events.filter(e=>e.ts>=from);
@@ -374,12 +375,51 @@ function indicators(days){
   const totals={}; farmaci().forEach(f=>totals[f.id]=0);
   prel.forEach(e=>Object.keys(e.delta||{}).forEach(k=>totals[k]=(totals[k]||0)-e.delta[k]));
   const rotte=prel.filter(e=>e.motivo==='rottura').reduce((a,e)=>a+Object.values(e.delta||{}).reduce((x,y)=>x-y,0),0);
+
+  // 1. Corrispondenza delle giacenze (verifiche cambio turno e rispetto finestra 48h)
+  const verifiche = ev.filter(e=>e.type==='verifica_turno');
+  const lastVerifica = S.events.find(e=>e.type==='verifica_turno');
+  const oreDaUltimaVerifica = lastVerifica ? Math.round((Date.now() - lastVerifica.ts) / 3600000) : null;
+
+  // 2. Tempestività delle registrazioni
+  const tras = prel.filter(e=>e.trascritto).length;
+  const avgRit = rit.length ? rit.reduce((a,e)=>a+e.durataMin,0)/rit.length : 0;
+  const overRit = rit.filter(e=>e.durataMin>tout).length;
+
+  // 3. Completezza della documentazione
+  const prelCompleti = prel.filter(e =>
+    e.by && e.paziente && e.motivo && e.trascritto &&
+    (e.lottiScalati && e.lottiScalati.length > 0)
+  ).length;
+
+  // 4. Discrepanze non giustificate
+  const rettifiche = ev.filter(e=>e.type==='rettifica');
+  const rettSenzaMotivo = rettifiche.filter(e=>!e.motivo || !String(e.motivo).trim()).length;
+  const rottureNonGestite = prel.filter(e=>e.motivo==='rottura' && !e.gestito).length;
+  const negati = ev.filter(e=>e.type==='accesso_negato').length;
+  const discrepanzeTot = rettSenzaMotivo + rottureNonGestite + overRit;
+
+  // 5. Anomalie dei consumi (confronto consumo medio giornaliero periodo vs storico)
+  const allPrel = S.events.filter(e=>e.type==='prelievo');
+  const firstEvTs = allPrel.length ? allPrel[allPrel.length-1].ts : from;
+  const totalHistDays = Math.max(1, Math.ceil((Date.now() - firstEvTs) / 86400000));
+  const periodoTotFiale = Object.values(totals).reduce((a,b)=>a+b, 0);
+  const histTotFiale = allPrel.reduce((a,e)=>a+Object.values(e.delta||{}).reduce((x,y)=>x-y,0), 0);
+  const mediaPeriodo = periodoTotFiale / Math.max(1, days);
+  const mediaStorica = histTotFiale / totalHistDays;
+  const scostamentoPct = mediaStorica > 0 ? Math.round(((mediaPeriodo - mediaStorica) / mediaStorica) * 100) : 0;
+
   const perDay=[];
   for(let i=0;i<days;i++){ const d=new Date(from); d.setDate(d.getDate()+i); const key=dayKey(d.getTime()); const v={}; farmaci().forEach(f=>v[f.id]=0);
     prel.filter(e=>dayKey(e.ts)===key).forEach(e=>Object.keys(e.delta||{}).forEach(k=>v[k]=(v[k]||0)-e.delta[k])); perDay.push({key,ts:d.getTime(),v}); }
-  return {prel:prel.length,tras:prel.filter(e=>e.trascritto).length,
-    avg:rit.length?rit.reduce((a,e)=>a+e.durataMin,0)/rit.length:0,over:rit.filter(e=>e.durataMin>tout).length,rit:rit.length,
-    totals,rotte,perDay,aperture:ev.filter(e=>e.type==='chiave_presa').length,negati:ev.filter(e=>e.type==='accesso_negato').length};
+
+  return {
+    prel:prel.length, tras, avg:avgRit, over:overRit, rit:rit.length,
+    totals, rotte, perDay, aperture:ev.filter(e=>e.type==='chiave_presa').length, negati,
+    verificheCount: verifiche.length, oreDaUltimaVerifica,
+    prelCompleti, rettificheCount: rettifiche.length, discrepanzeTot,
+    scostamentoPct, mediaPeriodo
+  };
 }
 
 function alerts(){
@@ -1098,17 +1138,53 @@ function chartSVG(perDay){
 function kpi(label,value,sub,pill){ return `<div class="kpi"><div class="kpi-l">${label}</div><div class="kpi-v">${value}</div><div class="kpi-s">${sub}</div>${pill?'<div class="row-meta">'+pill+'</div>':''}</div>`; }
 
 function tabIndicatori(){
-  const I=indicators(S.period); const tout=cfg().timeoutChiaveMin||15;
-  const tras=I.prel?Math.round(I.tras/I.prel*100):null;
-  const tPill=tras==null?'':tras>=98?'<span class="pill ok">In linea</span>':'<span class="pill warn">'+(I.prel-I.tras)+' da trascrivere</span>';
-  return `<div class="sec-h"><div><h2>Indicatori</h2><p class="fine">Per l’audit clinico con l’équipe: misurano il sistema, non le persone.</p></div><div class="seg" role="group" aria-label="Periodo">${[7,14,30,90,365].map(p=>`<button data-act="setPeriod" data-p="${p}" aria-pressed="${S.period===p}">${p===365?'1 anno':p+' giorni'}</button>`).join('')}</div></div>
-    <div class="kpis">
-      ${kpi('Trascrizione sul registro',tras==null?'—':tras+'<small>%</small>',I.tras+' prelievi su '+I.prel+' confermati',tPill)}
-      ${kpi('Chiave fuori, tempo medio',I.rit?Math.round(I.avg)+'<small> min</small>':'—',I.over?(I.over===1?'1 volta':I.over+' volte')+' oltre '+tout+' min':'mai oltre '+tout+' min',I.over?'<span class="pill warn">Da approfondire</span>':'')}
-      ${kpi('Aperture della keybox',I.aperture,I.prel+' prelievi registrati · '+(I.negati?(I.negati===1?'1 accesso negato':I.negati+' accessi negati'):'nessun accesso negato'),'')}
-      ${kpi('Fiale rotte o cadute',I.rotte,'nel periodo','')}
+  const I=indicators(S.period);
+
+  // KPI 1: Corrispondenza delle giacenze
+  const k1Val = I.oreDaUltimaVerifica == null ? '—' : I.oreDaUltimaVerifica + '<small> h fa</small>';
+  const k1Sub = I.verificheCount + (I.verificheCount===1?' controllo':' controlli') + ' nel periodo (target ≤ 48h)';
+  const k1Pill = I.oreDaUltimaVerifica == null
+    ? '<span class="pill warn">Nessuna verifica registrata</span>'
+    : (I.oreDaUltimaVerifica <= 48 ? '<span class="pill ok">Entro 48h (Art. 11)</span>' : '<span class="pill crit">Oltre 48h</span>');
+
+  // KPI 2: Tempestività delle registrazioni
+  const trasPct = I.prel ? Math.round(I.tras/I.prel*100) : null;
+  const k2Val = trasPct == null ? '—' : trasPct + '<small>%</small>';
+  const k2Sub = I.tras + '/' + I.prel + ' trascritti · chiave fuori media ' + (I.rit ? Math.round(I.avg) + ' min' : '—');
+  const k2Pill = trasPct == null ? '' : (trasPct >= 98 && I.over === 0 ? '<span class="pill ok">In linea</span>' : '<span class="pill warn">' + (I.prel - I.tras) + ' da trascrivere</span>');
+
+  // KPI 3: Completezza della documentazione
+  const compPct = I.prel ? Math.round(I.prelCompleti/I.prel*100) : null;
+  const k3Val = compPct == null ? '—' : compPct + '<small>%</small>';
+  const k3Sub = I.prelCompleti + ' su ' + I.prel + ' prelievi con lotto, paziente e firma';
+  const k3Pill = compPct == null ? '' : (compPct >= 95 ? '<span class="pill ok">Conforme</span>' : '<span class="pill warn">Dati incompleti</span>');
+
+  // KPI 4: Discrepanze non giustificate
+  const k4Val = String(I.discrepanzeTot);
+  const k4Sub = I.rettificheCount + ' rettifiche · ' + I.rotte + ' fiale rotte · ' + I.over + ' ritardi chiave';
+  const k4Pill = I.discrepanzeTot === 0 ? '<span class="pill ok">Zero anomalie</span>' : '<span class="pill crit">' + I.discrepanzeTot + ' da verificare</span>';
+
+  // KPI 5: Anomalie dei consumi
+  const sign = I.scostamentoPct > 0 ? '+' : '';
+  const k5Val = sign + I.scostamentoPct + '<small>%</small>';
+  const k5Sub = 'Media ' + I.mediaPeriodo.toFixed(1) + ' fiale/die vs storico (' + I.aperture + ' aperture)';
+  const k5Pill = Math.abs(I.scostamentoPct) <= 30 ? '<span class="pill ok">Nella norma</span>' : '<span class="pill warn">Scostamento rilevato</span>';
+
+  return `<div class="sec-h">
+      <div>
+        <h2>Indicatori di vigilanza (Art. 15, c. 5 · D.M. 15/09/2026)</h2>
+        <p class="fine">Monitoraggio continuo dei 5 indicatori ministeriali di sicurezza e tracciabilità del reparto.</p>
+      </div>
+      <div class="seg" role="group" aria-label="Periodo">${[7,14,30,90,365].map(p=>`<button data-act="setPeriod" data-p="${p}" aria-pressed="${S.period===p}">${p===365?'1 anno':p+' giorni'}</button>`).join('')}</div>
     </div>
-    <section class="panel"><div class="sec-h"><div><h2>Fiale prelevate al giorno</h2><p class="fine">${farmaci().map(f=>f.nome+' '+(I.totals[f.id]||0)).join(' · ')} nel periodo</p></div><button class="btn btn-quiet btn-sm" data-act="toggleTable">${S.showTable?'Mostra il grafico':'Mostra la tabella'}</button></div>
+    <div class="kpis">
+      ${kpi('1. Corrispondenza delle giacenze', k1Val, k1Sub, k1Pill)}
+      ${kpi('2. Tempestività delle registrazioni', k2Val, k2Sub, k2Pill)}
+      ${kpi('3. Completezza della documentazione', k3Val, k3Sub, k3Pill)}
+      ${kpi('4. Discrepanze non giustificate', k4Val, k4Sub, k4Pill)}
+      ${kpi('5. Anomalie dei consumi', k5Val, k5Sub, k5Pill)}
+    </div>
+    <section class="panel"><div class="sec-h"><div><h2>Fiale prelevate al giorno (Analisi consumi)</h2><p class="fine">${farmaci().map(f=>f.nome+' '+(I.totals[f.id]||0)).join(' · ')} nel periodo</p></div><button class="btn btn-quiet btn-sm" data-act="toggleTable">${S.showTable?'Mostra il grafico':'Mostra la tabella'}</button></div>
       <div class="legend">${farmaci().map(f=>`<span class="d-${f.tema}"><i class="sw"></i>${esc(f.nome)}</span>`).join('')}</div>
       ${S.showTable?`<div class="tbl"><table><thead><tr><th>Giorno</th>${farmaci().map(f=>`<th class="num">${esc(f.nome)}</th>`).join('')}</tr></thead><tbody>${I.perDay.slice().reverse().map(d=>`<tr><td>${esc(dayLabel(d.key))}</td>${farmaci().map(f=>`<td class="num">${d.v[f.id]||0}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:`<div>${chartSVG(I.perDay)}</div>`}
     </section>`;
