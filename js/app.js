@@ -573,26 +573,22 @@ function modeText(){
 function viewTop(){
   const m=me(); const c=cfg(); const n=isCoord()?alerts().length:0;
   const masterBadge = isMaster() ? `<span class="pill ok" style="margin-left:6px;">MASTER</span>` : '';
-  const reps = S.repartiOverview || [];
-  const mAlertsCount = (S.masterAlerts || []).length;
+  const inMasterHome = isMaster() && S.view==='coord' && S.tab==='master';
 
   return `<header class="top"><div class="top-in">
-    <div class="brand"><span class="brand-mark">${IC.box}</span><div><div class="brand-name">Keybox stupefacenti ${masterBadge}</div><div class="brand-sub">${isMaster() && S.tab==='master' ? 'Governance Aziendale · Tutti i reparti' : esc(c.reparto||'')}</div></div></div>
+    <div class="brand"><span class="brand-mark">${IC.box}</span><div><div class="brand-name">Keybox stupefacenti ${masterBadge}</div><div class="brand-sub">${inMasterHome ? 'Governance Aziendale · Tutti i reparti' : esc(c.reparto||'')}</div></div></div>
     <div class="who">
       <div class="who-name">${esc(m.nome)}</div>
       <div class="who-role">${m.ruolo==='master'?'Governance Aziendale / Farmacia':(m.ruolo==='coordinatore'?'Coordinatore':'Infermiere')} · <button class="btn-link" data-act="openMyPin" title="Cambia il tuo PIN">Modifica PIN</button></div>
     </div>
     <button class="btn btn-quiet btn-sm" data-act="logout">Esci</button>
   </div>
-  ${isMaster() ? `
-    <nav class="switch" aria-label="Reparti" style="flex-wrap:wrap;">
-      <button data-act="goMasterHome" aria-pressed="${S.view==='coord'&&S.tab==='master'}">Cruscotto Aziendale (${reps.length})${mAlertsCount?` <span class="count">${mAlertsCount}</span>`:''}</button>
-      ${reps.map(r => {
-        const isSelected = !(S.view==='coord'&&S.tab==='master') && Number(r.id) === Number(c.id);
-        return `<button data-act="switchReparto" data-id="${r.id}" aria-pressed="${isSelected}">${esc(r.reparto)}</button>`;
-      }).join('')}
+  ${isMaster() && !inMasterHome ? `
+    <nav class="switch" aria-label="Navigazione Master">
+      <button data-act="goMasterHome">← Cruscotto Aziendale (${(S.repartiOverview||[]).length})</button>
+      <button aria-pressed="true">${esc(c.reparto||'')}</button>
     </nav>
-  ` : (isCoord() ? `
+  ` : (!isMaster() && isCoord() ? `
     <nav class="switch" aria-label="Sezione">
       <button data-act="goView" data-v="home" aria-pressed="${S.view!=='coord'}">Reparto</button>
       <button data-act="goView" data-v="coord" aria-pressed="${S.view==='coord'}"><span class="hide-sm">Pannello coordinatore</span><span class="show-sm">Coordinatore</span>${n?` <span class="count">${n}</span>`:''}</button>
@@ -1153,7 +1149,7 @@ function viewMasterOverview(){
       <span class="fine">Seleziona un reparto per aprire la gestione completa da Coordinatore</span>
     </div>
 
-    <div class="grid2">
+    <div class="grid2" style="align-items:stretch;">
       ${reps.map(r => {
         const st = repStock(r);
         const flist = (r.farmaci || DEFAULT_FARMACI).filter(f => f.attivo !== false);
@@ -1163,42 +1159,39 @@ function viewMasterOverview(){
         const oreVerifica = r.lastVerificaTs ? Math.round((now - r.lastVerificaTs) / 3600000) : null;
         const verificaOk = oreVerifica != null && oreVerifica <= 48;
 
-        return `<section class="panel" style="cursor:pointer;" data-act="switchReparto" data-id="${r.id}">
-          <div class="sec-h">
-            <div>
-              <h3 style="margin:0;font-size:18px;">${esc(r.reparto)}</h3>
-              <div class="row-s">${r.staffCount || 0} operatori attivi</div>
+        return `<section class="panel" style="cursor:pointer;display:flex;flex-direction:column;justify-content:space-between;gap:12px;" data-act="switchReparto" data-id="${r.id}">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
+            <div style="min-width:0;">
+              <h3 style="margin:0;font-size:17px;line-height:1.25;">${esc(r.reparto)}</h3>
+              <div class="row-s" style="margin-top:2px;">${r.staffCount || 0} ${r.staffCount===1?'operatore attivo':'operatori attivi'}</div>
             </div>
-            <span class="pill ${keyLate ? 'crit' : (keyOut ? 'warn' : 'ok')}">
-              ${keyOut ? `Chiave fuori (${keyMins} min)` : 'Chiave in box'}
+            <span class="pill ${keyLate ? 'crit' : (keyOut ? 'warn' : 'ok')}" style="flex-shrink:0;">
+              ${keyOut ? `Chiave fuori (${keyMins}m)` : 'Chiave in box'}
             </span>
           </div>
 
-          <div class="subform" style="margin-block:8px;padding:10px;">
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;width:100%;">
+          <div class="subform" style="margin:0;padding:10px 12px;">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:10px;width:100%;">
               ${flist.map(f => {
                 const q = st[f.id] || 0;
                 const low = q <= (f.soglia || 0);
                 return `<div>
-                  <div class="row-s" style="font-weight:700;">${esc(f.nome)}</div>
-                  <div style="font-size:20px;font-weight:800;color:${low?'#EF4444':'inherit'};">${q} <small style="font-size:12px;font-weight:500;">fiale</small></div>
+                  <div class="row-s" style="font-weight:700;font-size:12px;">${esc(f.nome)}</div>
+                  <div style="font-size:19px;font-weight:800;line-height:1.2;margin-top:2px;color:${low?'#EF4444':'inherit'};">${q} <small style="font-size:12px;font-weight:500;">fiale</small></div>
                 </div>`;
               }).join('')}
             </div>
           </div>
 
-          <div class="row-meta" style="margin-bottom:10px;">
-            <span class="pill ${verificaOk ? 'ok' : 'warn'}">
-              ${oreVerifica == null ? 'Verifica 48h: Mai eseguita' : `Verifica turno: ${oreVerifica}h fa`}
-            </span>
-            ${r.daTrascrivereCount > 0 ? `<span class="pill warn">${r.daTrascrivereCount} da trascrivere</span>` : ''}
-            ${r.lottiAccantonati > 0 ? `<span class="pill warn">📦 ${r.lottiAccantonati} resi farmacia</span>` : ''}
-          </div>
-
-          <div class="btns">
-            <button class="btn btn-secondary btn-sm btn-block" data-act="switchReparto" data-id="${r.id}">
-              Apri gestione reparto →
-            </button>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:auto;padding-top:4px;">
+            <div class="row-meta" style="margin:0;">
+              <span class="pill ${verificaOk ? 'ok' : 'warn'}">
+                ${oreVerifica == null ? 'Verifica 48h: Mai eseguita' : `Verifica: ${oreVerifica}h fa`}
+              </span>
+              ${r.daTrascrivereCount > 0 ? `<span class="pill warn">${r.daTrascrivereCount} da trascrivere</span>` : ''}
+              ${r.lottiAccantonati > 0 ? `<span class="pill warn">📦 ${r.lottiAccantonati} resi</span>` : ''}
+            </div>
+            <span style="font-size:13px;font-weight:700;color:var(--accent,#10B981);white-space:nowrap;">Gestisci →</span>
           </div>
         </section>`;
       }).join('')}
