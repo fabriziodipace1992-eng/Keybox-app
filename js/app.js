@@ -156,7 +156,10 @@ const initialPersisted = loadPersistedState();
 const S={
   loaded:false, loadError:false, staffLoaded:false, readOnly:false,
   config:null, base:null, key:null, staff:{}, events:[], lotti:[],
+  repartiOverview:[],
   meId:null, meUser:null, view:'home', tab:'stato', flow:null,
+  selectedRepartoId:null,
+  newRepartoModal:false,
   codeShownUntil:0, confirmTake:false,
   loginErr:'', fails:0, lockUntil:0, lastActivity:Date.now(),
   period:14, filter:'tutti', regLimit:120, showTable:false,
@@ -174,7 +177,8 @@ const farmaciTutti=()=>(S.config&&S.config.farmaci)||DEFAULT_FARMACI;
 const farmaci=()=>farmaciTutti().filter(f=>f.attivo!==false);
 const fById=id=>farmaciTutti().find(f=>f.id===id)||{id,nome:id,sale:'',dosaggio:'',tema:'m',sigla:'?',unitaPerScatola:5};
 const me=()=>S.meUser||(S.meId?S.staff[S.meId]:null);
-const isCoord=()=>{const m=me();return !!m&&m.ruolo==='coordinatore';};
+const isMaster=()=>{const m=me();return !!m&&m.ruolo==='master';};
+const isCoord=()=>{const m=me();return !!m&&(m.ruolo==='coordinatore'||m.ruolo==='master');};
 
 function isLottoAccantonato(l){
   if(!l) return false;
@@ -186,6 +190,18 @@ function stock(){
   const b=S.base||{giacenza:{},ts:0}; const g={};
   farmaciTutti().forEach(f=>g[f.id]=(b.giacenza&&b.giacenza[f.id])||0);
   S.events.forEach(e=>{ if(e.ts>b.ts&&e.delta){ Object.keys(e.delta).forEach(k=>{ g[k]=(g[k]||0)+e.delta[k]; }); } });
+  return g;
+}
+
+function repStock(rep){
+  const g={};
+  const flist = rep.farmaci || DEFAULT_FARMACI;
+  flist.forEach(f=>g[f.id]=(rep.giacenzaBase&&rep.giacenzaBase[f.id])||0);
+  (rep.deltaAfterBase||[]).forEach(delta=>{
+    if(delta){
+      Object.keys(delta).forEach(k=>{ g[k]=(g[k]||0)+Number(delta[k]||0); });
+    }
+  });
   return g;
 }
 
@@ -376,30 +392,25 @@ function indicators(days){
   prel.forEach(e=>Object.keys(e.delta||{}).forEach(k=>totals[k]=(totals[k]||0)-e.delta[k]));
   const rotte=prel.filter(e=>e.motivo==='rottura').reduce((a,e)=>a+Object.values(e.delta||{}).reduce((x,y)=>x-y,0),0);
 
-  // 1. Corrispondenza delle giacenze (verifiche cambio turno e rispetto finestra 48h)
   const verifiche = ev.filter(e=>e.type==='verifica_turno');
   const lastVerifica = S.events.find(e=>e.type==='verifica_turno');
   const oreDaUltimaVerifica = lastVerifica ? Math.round((Date.now() - lastVerifica.ts) / 3600000) : null;
 
-  // 2. Tempestività delle registrazioni
   const tras = prel.filter(e=>e.trascritto).length;
   const avgRit = rit.length ? rit.reduce((a,e)=>a+e.durataMin,0)/rit.length : 0;
   const overRit = rit.filter(e=>e.durataMin>tout).length;
 
-  // 3. Completezza della documentazione
   const prelCompleti = prel.filter(e =>
     e.by && e.paziente && e.motivo && e.trascritto &&
     (e.lottiScalati && e.lottiScalati.length > 0)
   ).length;
 
-  // 4. Discrepanze non giustificate
   const rettifiche = ev.filter(e=>e.type==='rettifica');
   const rettSenzaMotivo = rettifiche.filter(e=>!e.motivo || !String(e.motivo).trim()).length;
   const rottureNonGestite = prel.filter(e=>e.motivo==='rottura' && !e.gestito).length;
   const negati = ev.filter(e=>e.type==='accesso_negato').length;
   const discrepanzeTot = rettSenzaMotivo + rottureNonGestite + overRit;
 
-  // 5. Anomalie dei consumi (confronto consumo medio giornaliero periodo vs storico)
   const allPrel = S.events.filter(e=>e.type==='prelievo');
   const firstEvTs = allPrel.length ? allPrel[allPrel.length-1].ts : from;
   const totalHistDays = Math.max(1, Math.ceil((Date.now() - firstEvTs) / 86400000));
@@ -527,7 +538,7 @@ function render(passive){
     if(S.view==='prelievo'&&S.flow) body=viewPrelievo();
     else if(S.view==='coord'&&isCoord()) body=viewCoord();
     else body=viewHome();
-    html=viewTop()+`<main class="wrap${S.view==='coord'?' wide':''}">${body}</main>${S.showMyPinModal?viewMyPinModal():''}${S.assocLottoFarmacoId?viewAssocLottoModal():''}`;
+    html=viewTop()+`<main class="wrap${S.view==='coord'?' wide':''}">${body}</main>${S.showMyPinModal?viewMyPinModal():''}${S.assocLottoFarmacoId?viewAssocLottoModal():''}${S.newRepartoModal?viewNewRepartoModal():''}`;
   }
   app.innerHTML=html;
   if(keep) Object.keys(keep).forEach(id=>{ const el=document.getElementById(id); if(el) el.value=keep[id]; });
@@ -541,23 +552,61 @@ function viewLoading(){ return `<main class="wrap"><div class="loading"><span cl
 function viewError(){ return `<main class="wrap"><div class="empty"><h2>${/config\.js/.test(S.loadErrorMsg||'')?'Collegamento da completare':'Non riesco a leggere i dati'}</h2><p>${esc(S.loadErrorMsg||'Controlla la connessione e ricarica la pagina.')}</p></div></main>`; }
 function mode(){ return REMOTE_ON?'remote':Store.mode; }
 function modeText(){
-  if(REMOTE_ON) return 'I dati sono salvati nel database Supabase del reparto e condivisi tra tutti i dispositivi che aprono l\u2019app.';
+  if(REMOTE_ON) return 'I dati sono salvati nel database Supabase e condivisi in tempo reale tra tutti i dispositivi.';
   if(Store.mode==='local') return 'Modalità locale: i dati sono salvati in questo browser.';
   return 'Il browser non consente il salvataggio: i dati si perdono chiudendo la pagina.';
 }
 
 function viewTop(){
   const m=me(); const c=cfg(); const n=isCoord()?alerts().length:0;
+  const masterBadge = isMaster() ? `<span class="pill ok" style="margin-left:6px;">MASTER</span>` : '';
   return `<header class="top"><div class="top-in">
-    <div class="brand"><span class="brand-mark">${IC.box}</span><div><div class="brand-name">Keybox stupefacenti</div><div class="brand-sub">${esc(c.reparto||'')}</div></div></div>
+    <div class="brand"><span class="brand-mark">${IC.box}</span><div><div class="brand-name">Keybox stupefacenti ${masterBadge}</div><div class="brand-sub">${esc(c.reparto||'')}</div></div></div>
     <div class="who">
       <div class="who-name">${esc(m.nome)}</div>
-      <div class="who-role">${m.ruolo==='coordinatore'?'Coordinatore':'Infermiere'} · <button class="btn-link" data-act="openMyPin" title="Cambia il tuo PIN">Modifica PIN</button></div>
+      <div class="who-role">${m.ruolo==='master'?'Governance Aziendale / Farmacia':(m.ruolo==='coordinatore'?'Coordinatore':'Infermiere')} · <button class="btn-link" data-act="openMyPin" title="Cambia il tuo PIN">Modifica PIN</button></div>
     </div>
     <button class="btn btn-quiet btn-sm" data-act="logout">Esci</button>
   </div>
-  ${isCoord()?`<nav class="switch" aria-label="Sezione"><button data-act="goView" data-v="home" aria-pressed="${S.view!=='coord'}">Reparto</button><button data-act="goView" data-v="coord" aria-pressed="${S.view==='coord'}"><span class="hide-sm">Pannello coordinatore</span><span class="show-sm">Coordinatore</span>${n?` <span class="count">${n}</span>`:''}</button></nav>`:''}
+  ${isCoord()?`<nav class="switch" aria-label="Sezione">
+    ${isMaster()?`<button data-act="goMasterHome" aria-pressed="${S.view==='coord'&&S.tab==='master'}">Panoramica Reparti (${(S.repartiOverview||[]).length})</button>`:''}
+    <button data-act="goView" data-v="home" aria-pressed="${S.view!=='coord'}">Reparto: ${esc(c.reparto||'')}</button>
+    <button data-act="goView" data-v="coord" aria-pressed="${S.view==='coord'&&S.tab!=='master'}"><span class="hide-sm">Gestione ${esc(c.reparto||'')}</span><span class="show-sm">Gestione</span>${n?` <span class="count">${n}</span>`:''}</button>
+  </nav>`:''}
   </header>`;
+}
+
+function viewNewRepartoModal(){
+  return `<div class="modal-backdrop"><div class="panel modal-card" style="max-width:560px;max-height:90vh;overflow-y:auto;">
+    <div class="sec-h">
+      <div>
+        <h2>Attiva Nuovo Reparto</h2>
+        <div class="sub">Crea una nuova Unità Operativa con keybox indipendente</div>
+      </div>
+      <button class="btn btn-quiet btn-sm" data-act="closeNewReparto">✕</button>
+    </div>
+    <form data-submit="createReparto" novalidate>
+      <label class="field"><span>Nome del reparto / U.O.</span><input id="nr-rep" type="text" maxlength="60" placeholder="Es. Terapia Intensiva · Blocco B" required></label>
+      <div class="eyebrow">Coordinatore Infermieristico del Reparto</div>
+      <label class="field"><span>Nome e cognome</span><input id="nr-nome" type="text" maxlength="60" placeholder="Es. Dott.ssa Elena Rossi" required></label>
+      <label class="field"><span>Email istituzionale (per recupero PIN)</span><input id="nr-email" type="email" maxlength="80" placeholder="nome.cognome@ao-siena.toscana.it" required></label>
+      <div class="two">
+        <label class="field"><span>Matricola</span><input id="nr-mat" type="text" inputmode="numeric" maxlength="12" placeholder="Es. 5566" required></label>
+        <label class="field"><span>PIN provvisorio (4-6 cifre)</span><input id="nr-pin" type="password" inputmode="numeric" maxlength="6" placeholder="Es. 1234" required></label>
+      </div>
+      <div class="eyebrow">Configurazione Iniziale Keybox</div>
+      <label class="field"><span>Codice attuale della keybox (5 cifre)</span><input id="nr-code" type="text" inputmode="numeric" maxlength="5" placeholder="Es. 84920" required></label>
+      <div class="two">
+        <label class="field"><span>Morfina iniziale (fiale)</span><input id="nr-g-morfina" type="number" inputmode="numeric" min="0" max="999" value="0"></label>
+        <label class="field"><span>Fentanyl iniziale (fiale)</span><input id="nr-g-fentanyl" type="number" inputmode="numeric" min="0" max="999" value="0"></label>
+      </div>
+      <p class="err" id="nr-err"></p>
+      <div class="btns" style="margin-top:16px;">
+        <button class="btn btn-primary btn-block">Attiva Reparto</button>
+        <button type="button" class="btn btn-quiet btn-block" data-act="closeNewReparto">Annulla</button>
+      </div>
+    </form>
+  </div></div>`;
 }
 
 function viewRecovery(){
@@ -711,15 +760,26 @@ function viewSetup(){
 
 function viewLogin(){
   const c=cfg(); const locked=S.lockUntil>Date.now();
-  const staffList=Object.values(S.staff||{}).filter(s=>s.attivo!==false);
-  
+  const repartiList = (S.publicInfo && S.publicInfo.reparti) || [];
+  const activeRepId = S.selectedRepartoId || (repartiList[0] && repartiList[0].id) || 1;
+  const currentRepObj = repartiList.find(r => Number(r.id) === Number(activeRepId));
+  const repName = currentRepObj ? currentRepObj.reparto : (c.reparto || '');
+
   return `<main class="wrap">
     <div class="login-hero">
       <span class="brand-mark">${IC.box}</span>
-      <div><h1>Keybox stupefacenti</h1><p class="lead">${esc(c.reparto||'')}</p></div>
+      <div><h1>Keybox stupefacenti</h1><p class="lead">${esc(repName)}</p></div>
     </div>
     <form class="panel" data-submit="login" novalidate>
-      <label class="field"><span>Matricola</span><input id="l-mat" type="text" inputmode="numeric" autocomplete="username" maxlength="12" value="${esc(S.loginMat||'')}"></label>
+      ${repartiList.length > 1 ? `
+        <label class="field">
+          <span>Reparto / Unità Operativa</span>
+          <select id="l-rep" data-act="changeLoginRep">
+            ${repartiList.map(r => `<option value="${r.id}" ${Number(r.id)===Number(activeRepId)?'selected':''}>${esc(r.reparto)}</option>`).join('')}
+          </select>
+        </label>
+      ` : ''}
+      <label class="field"><span>Matricola</span><input id="l-mat" type="text" autocomplete="username" maxlength="16" value="${esc(S.loginMat||'')}"></label>
       <label class="field"><span>PIN personale</span><input id="l-pin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="6"></label>
       <p class="err" id="l-err">${esc(locked?'Troppi tentativi errati. Riprova tra '+Math.ceil((S.lockUntil-Date.now())/1000)+' secondi.':S.loginErr)}</p>
       <button class="btn btn-primary btn-block btn-lg" ${locked?'disabled':''}>Accedi</button>
@@ -727,7 +787,6 @@ function viewLogin(){
         <button type="button" class="btn-link" data-act="startRecovery">Hai dimenticato il PIN? (Solo Coordinatore)</button>
       </div>
     </form>
-    ${staffList.length?`<section class="panel"><div class="sec-h"><h2>Personale registrato (Accesso Rapido)</h2><span class="pill info">Demo</span></div><p class="fine">Tocca il tuo nome per precompilare la matricola.</p><div class="creds">${staffList.map(s=>`<button type="button" class="cred" data-act="fillUser" data-m="${esc(s.id)}"><div><b>${esc(s.nome)}</b><br><span>${s.ruolo==='coordinatore'?'Coordinatore':'Infermiere'}</span></div><span class="mono">Matricola: ${esc(s.id)}</span></button>`).join('')}</div></section>`:''}
     <p class="fine">Ogni apertura della keybox viene registrata con nome, data e ora. La sessione si chiude da sola dopo ${c.sessioneMin||5} minuti di inattività.</p>
   </main>`;
 }
@@ -919,7 +978,76 @@ function viewPrelievo(){
     </section>`;
 }
 
+function viewMasterOverview(){
+  const reps = S.repartiOverview || [];
+  const activeRepId = cfg().id;
+  const now = Date.now();
+
+  return `<div class="block">
+    <div class="sec-h">
+      <div>
+        <h2>Cruscotto Aziendale · Unità Operative Attive</h2>
+        <p class="fine">Supervisione centralizzata di giacenze, stato chiave, controlli 48h (D.M. 15/09/2026) e resi alla farmacia.</p>
+      </div>
+      <button class="btn btn-primary" data-act="openNewReparto">+ Attiva nuovo reparto</button>
+    </div>
+
+    <div class="grid2">
+      ${reps.map(r => {
+        const isCurrent = Number(r.id) === Number(activeRepId);
+        const st = repStock(r);
+        const flist = (r.farmaci || DEFAULT_FARMACI).filter(f => f.attivo !== false);
+        const keyOut = r.keyStatus === 'out';
+        const keyMins = keyOut && r.keySince ? mins(r.keySince) : 0;
+        const keyLate = keyOut && keyMins > (r.timeoutChiaveMin || 15);
+        const oreVerifica = r.lastVerificaTs ? Math.round((now - r.lastVerificaTs) / 3600000) : null;
+        const verificaOk = oreVerifica != null && oreVerifica <= 48;
+
+        return `<section class="panel" style="border-left: 5px solid ${isCurrent ? 'var(--accent,#0D6A62)' : '#CBD5E1'};">
+          <div class="sec-h">
+            <div>
+              <h3 style="margin:0;font-size:18px;">${esc(r.reparto)} ${isCurrent ? '<span class="pill ok" style="margin-left:6px;">In ispezione</span>' : ''}</h3>
+              <div class="row-s">${r.staffCount || 0} operatori attivi</div>
+            </div>
+            <span class="pill ${keyLate ? 'crit' : (keyOut ? 'warn' : 'ok')}">
+              ${keyOut ? `Chiave fuori (${keyMins} min)` : 'Chiave in box'}
+            </span>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-block:10px;">
+            ${flist.map(f => {
+              const q = st[f.id] || 0;
+              const low = q <= (f.soglia || 0);
+              return `<div style="background:var(--bg-soft,#F8FAFC);padding:8px 10px;border-radius:8px;border:1px solid #E2E8F0;">
+                <div style="font-size:12px;font-weight:700;color:#475569;">${esc(f.nome)}</div>
+                <div style="font-size:20px;font-weight:800;color:${low?'#DC2626':'#0F172A'};">${q} <small style="font-size:12px;font-weight:500;">fiale</small></div>
+              </div>`;
+            }).join('')}
+          </div>
+
+          <div class="row-meta" style="margin-bottom:12px;">
+            <span class="pill ${verificaOk ? 'ok' : 'warn'}">
+              ${oreVerifica == null ? 'Verifica 48h: Mai eseguita' : `Verifica turno: ${oreVerifica}h fa`}
+            </span>
+            ${r.lottiAccantonati > 0 ? `<span class="pill warn">📦 ${r.lottiAccantonati} lotti da ritirare (reso)</span>` : ''}
+          </div>
+
+          <div class="btns">
+            <button class="btn ${isCurrent ? 'btn-secondary' : 'btn-primary'} btn-sm btn-block" data-act="switchReparto" data-id="${r.id}">
+              ${isCurrent ? 'Apri gestione completa di questo reparto →' : 'Ispeziona questo reparto →'}
+            </button>
+          </div>
+        </section>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
 function viewCoord(){
+  if(isMaster() && S.tab === 'master'){
+    return viewMasterOverview();
+  }
+
   const n=alerts().length;
   const tabs=[['stato','Stato'],['segnalazioni','Segnalazioni'],['registro','Registro'],['indicatori','Indicatori'],['impostazioni','Impostazioni']];
   let body='';
@@ -1140,31 +1268,26 @@ function kpi(label,value,sub,pill){ return `<div class="kpi"><div class="kpi-l">
 function tabIndicatori(){
   const I=indicators(S.period);
 
-  // KPI 1: Corrispondenza delle giacenze
   const k1Val = I.oreDaUltimaVerifica == null ? '—' : I.oreDaUltimaVerifica + '<small> h fa</small>';
   const k1Sub = I.verificheCount + (I.verificheCount===1?' controllo':' controlli') + ' nel periodo (target ≤ 48h)';
   const k1Pill = I.oreDaUltimaVerifica == null
     ? '<span class="pill warn">Nessuna verifica registrata</span>'
     : (I.oreDaUltimaVerifica <= 48 ? '<span class="pill ok">Entro 48h (Art. 11)</span>' : '<span class="pill crit">Oltre 48h</span>');
 
-  // KPI 2: Tempestività delle registrazioni
   const trasPct = I.prel ? Math.round(I.tras/I.prel*100) : null;
   const k2Val = trasPct == null ? '—' : trasPct + '<small>%</small>';
   const k2Sub = I.tras + '/' + I.prel + ' trascritti · chiave fuori media ' + (I.rit ? Math.round(I.avg) + ' min' : '—');
   const k2Pill = trasPct == null ? '' : (trasPct >= 98 && I.over === 0 ? '<span class="pill ok">In linea</span>' : '<span class="pill warn">' + (I.prel - I.tras) + ' da trascrivere</span>');
 
-  // KPI 3: Completezza della documentazione
   const compPct = I.prel ? Math.round(I.prelCompleti/I.prel*100) : null;
   const k3Val = compPct == null ? '—' : compPct + '<small>%</small>';
   const k3Sub = I.prelCompleti + ' su ' + I.prel + ' prelievi con lotto, paziente e firma';
   const k3Pill = compPct == null ? '' : (compPct >= 95 ? '<span class="pill ok">Conforme</span>' : '<span class="pill warn">Dati incompleti</span>');
 
-  // KPI 4: Discrepanze non giustificate
   const k4Val = String(I.discrepanzeTot);
   const k4Sub = I.rettificheCount + ' rettifiche · ' + I.rotte + ' fiale rotte · ' + I.over + ' ritardi chiave';
   const k4Pill = I.discrepanzeTot === 0 ? '<span class="pill ok">Zero anomalie</span>' : '<span class="pill crit">' + I.discrepanzeTot + ' da verificare</span>';
 
-  // KPI 5: Anomalie dei consumi
   const sign = I.scostamentoPct > 0 ? '+' : '';
   const k5Val = sign + I.scostamentoPct + '<small>%</small>';
   const k5Sub = 'Media ' + I.mediaPeriodo.toFixed(1) + ' fiale/die vs storico (' + I.aperture + ' aperture)';
@@ -1300,7 +1423,7 @@ async function run(fn){ try{ await fn(); }catch(e){ if(e&&e.session){ logout('Se
 function saveSession(){ try{ if(REMOTE_ON?S.token:S.meId) sessionStorage.setItem(SS_KEY,JSON.stringify(REMOTE_ON?{token:S.token,last:S.lastActivity}:{id:S.meId,last:S.lastActivity})); else sessionStorage.removeItem(SS_KEY); }catch(e){} }
 function logout(msg){
   Api.logout().catch(()=>{}); S.codeValue='';
-  S.meId=null; S.meUser=null; S.view='home'; S.tab='stato'; S.filter='tutti'; S.flow=null; S.codeShownUntil=0; S.confirmTake=false; S.codeFlow=null; S.coordForm=null; S.ackId=null; S.revealCode=false; S.resetStep=0; S.pinFor=null; S.showMyPinModal=false; S.recoveryFlow=null; S.assocLottoFarmacoId=null;
+  S.meId=null; S.meUser=null; S.view='home'; S.tab='stato'; S.filter='tutti'; S.flow=null; S.codeShownUntil=0; S.confirmTake=false; S.codeFlow=null; S.coordForm=null; S.ackId=null; S.revealCode=false; S.resetStep=0; S.pinFor=null; S.showMyPinModal=false; S.recoveryFlow=null; S.assocLottoFarmacoId=null; S.newRepartoModal=false; S.repartiOverview=[];
   saveSession(); render(); if(msg) toast(msg);
 }
 function isWeak(code){
@@ -1379,14 +1502,12 @@ const LocalApi={
   async prelievo(o){
     const st=stock(); const delta={}; const after=Object.assign({},st);
     const lottiScalati = [];
-    
     for(const f of farmaci()){
       const q = o.qty[f.id] || 0;
       if(q > (st[f.id] || 0)) throw new UserError('La giacenza è cambiata nel frattempo: ricontrolla le quantità.');
       if(q > 0){
         delta[f.id] = -q;
         after[f.id] = (st[f.id] || 0) - q;
-        
         const plan = getFefoPlan(f.id, q);
         plan.forEach(p => {
           if(p.lottoId){
@@ -1400,17 +1521,11 @@ const LocalApi={
         });
       }
     }
-    
     const evt=await addEvent('prelievo',{
-      delta,
-      paziente:o.paziente,
-      motivo:o.motivo,
+      delta, paziente:o.paziente, motivo:o.motivo,
       note:o.motivo==='somministrazione'?'':o.note,
-      trascritto:false,
-      giacenzaDopo:after,
-      lottiScalati
+      trascritto:false, giacenzaDopo:after, lottiScalati
     });
-    
     await Store.set('app/state',{giacenza:after,ts:evt.ts,fonte:'prelievo'});
     return evt;
   },
@@ -1422,15 +1537,9 @@ const LocalApi={
     if(lotti && lotti.length){
       lotti.forEach(l=>{
         S.lotti.push({
-          id: uid(),
-          farmacoId: l.farmacoId,
-          lotto: l.lotto,
-          scadenza: l.scadenza,
-          fialeTotali: l.fiale,
-          fialeRimaste: l.fiale,
-          unitaPerScatola: l.unitaPerScatola || 5,
-          stato: 'attivo',
-          caricatoTs: Date.now()
+          id: uid(), farmacoId: l.farmacoId, lotto: l.lotto, scadenza: l.scadenza,
+          fialeTotali: l.fiale, fialeRimaste: l.fiale, unitaPerScatola: l.unitaPerScatola || 5,
+          stato: 'attivo', caricatoTs: Date.now()
         });
       });
     }
@@ -1438,23 +1547,15 @@ const LocalApi={
   async rettifica(a,motivo){ const evt=await addEvent('rettifica',{da:stock(),a,motivo}); await Store.set('app/state',{giacenza:a,ts:evt.ts,fonte:'rettifica'}); },
   async associaLottoEsistente(farmacoId, lotto, scadenza, fiale, unitaPerScatola){
     S.lotti.push({
-      id: uid(),
-      farmacoId: farmacoId,
-      lotto: lotto,
-      scadenza: scadenza,
-      fialeTotali: fiale,
-      fialeRimaste: fiale,
-      unitaPerScatola: unitaPerScatola || 5,
-      stato: 'attivo',
-      caricatoTs: Date.now()
+      id: uid(), farmacoId, lotto, scadenza,
+      fialeTotali: fiale, fialeRimaste: fiale, unitaPerScatola: unitaPerScatola || 5,
+      stato: 'attivo', caricatoTs: Date.now()
     });
     await addEvent('censimento_lotto',{
       nota: `Associazione lotto ${lotto} (${scadenza}, ${fiale} fiale, scatole da ${unitaPerScatola}) a ${fById(farmacoId).nome}`
     });
   },
-  async verificaTurno(nota){
-    await addEvent('verifica_turno',{ nota });
-  },
+  async verificaTurno(nota){ await addEvent('verifica_turno',{ nota }); },
   async accantonaReso(lottoId, nota){
     const l = S.lotti.find(x => x.id === lottoId);
     if(l){
@@ -1469,10 +1570,7 @@ const LocalApi={
   },
   async confermaResoFarmacia(lottoId, nota){
     const l = S.lotti.find(x => x.id === lottoId);
-    if(l){
-      l.stato = 'reso_consegnato';
-      l.fialeRimaste = 0;
-    }
+    if(l){ l.stato = 'reso_consegnato'; l.fialeRimaste = 0; }
     await addEvent('conferma_reso_farmacia',{ lottoId, nota });
   },
   ack(e,note){ return patchEvent(e,{gestito:{by:S.meId,byName:me().nome,ts:Date.now(),note}}); },
@@ -1489,14 +1587,11 @@ const LocalApi={
     for(const s of staff) await Store.del('staff/'+s.id);
     for(const l of logs) await Store.del('log/'+l.id);
     await Store.del('app/key'); await Store.del('app/state'); await Store.del('app/config');
-    localStorage.removeItem(LS_SNOOZE_KEY);
-    localStorage.removeItem(LS_NEGATI_KEY);
+    localStorage.removeItem(LS_SNOOZE_KEY); localStorage.removeItem(LS_NEGATI_KEY);
   }
 };
 
-function DEFAULTFARMACI_SAFE(){
-  return DEFAULT_FARMACI;
-}
+function DEFAULTFARMACI_SAFE(){ return DEFAULT_FARMACI; }
 
 async function rpc(fn,args){
   const h={'Content-Type':'application/json','apikey':SUPABASE_KEY};
@@ -1515,12 +1610,13 @@ async function rpc(fn,args){
   return j;
 }
 function clearRemoteData(){
-  S.events=[]; S.staff={}; S.staffLoaded=false; S.key=null; S.base=null; S.codeValue=''; S.meId=null; S.meUser=null; S.lotti=[];
+  S.events=[]; S.staff={}; S.staffLoaded=false; S.key=null; S.base=null; S.codeValue=''; S.meId=null; S.meUser=null; S.lotti=[]; S.repartiOverview=[];
   S.config=S.publicInfo||null;
 }
 function applyRemote(st){
   if(!st||!st.me) return;
   S.config=st.config; S.base=st.base; S.key=st.key; S.events=st.events||[]; S.lotti=st.lotti||[];
+  S.repartiOverview=st.repartiOverview||[];
   const m={}; (st.staff||[]).forEach(x=>{ m[x.id]=x; }); S.staff=m; S.staffLoaded=true; S.meId=st.me.id; S.meUser=st.me;
 }
 async function loadPublic(){
@@ -1536,9 +1632,23 @@ const RemoteApi={
     if(r&&r.state) applyRemote(r.state);
     return r?r.result:null;
   },
-  async login(mat,pin){ const r=await rpc('kb_login',{p_mat:mat,p_pin:pin}); if(r&&r.error) throw new UserError(r.error); S.token=r.token; await RemoteApi.refresh(true); },
+  async login(mat,pin,repId){
+    const r=await rpc('kb_login',{p_mat:mat,p_pin:pin,p_reparto_id:repId?Number(repId):null});
+    if(r&&r.error) throw new UserError(r.error);
+    S.token=r.token;
+    await RemoteApi.refresh(true);
+    if(isMaster()){
+      S.view='coord';
+      S.tab='master';
+    }
+  },
   async logout(){ const t=S.token; S.token=null; clearRemoteData(); if(t) await rpc('kb_logout',{p_token:t}); },
   async setup(p){ const r=await rpc('kb_setup',{p}); if(r&&r.error) throw new UserError(r.error); S.token=r.token; await loadPublic(); await RemoteApi.refresh(true); },
+  switchReparto(repId){ return RemoteApi.act('switch_reparto',{reparto_id:Number(repId)}); },
+  async createReparto(p){
+    await RemoteApi.act('create_reparto', p);
+    await loadPublic();
+  },
   async reqOtp(mat){
     const r=await rpc('kb_request_pin_reset',{p_matricola:mat});
     if(r&&r.error) throw new UserError(r.error);
@@ -1571,22 +1681,15 @@ const RemoteApi={
   async associaLottoEsistente(farmacoId, lotto, scadenza, fiale, unitaPerScatola){
     try {
       const res = await rpc('kb_associa_lotto_esistente', {
-        p_farmaco_id: farmacoId,
-        p_lotto: lotto,
-        p_scadenza: scadenza,
-        p_fiale_rimaste: fiale,
-        p_unita_per_scatola: unitaPerScatola || 5,
-        p_operatore_matr: S.meId,
-        p_operatore_nome: me()?.nome || ''
+        p_farmaco_id: farmacoId, p_lotto: lotto, p_scadenza: scadenza,
+        p_fiale_rimaste: fiale, p_unita_per_scatola: unitaPerScatola || 5,
+        p_operatore_matr: S.meId, p_operatore_nome: me()?.nome || ''
       });
       if(res && res.error) throw new UserError(res.error);
     } catch(err) {
       await RemoteApi.act('associa_lotto_esistente', {
-        farmaco_id: farmacoId,
-        lotto: lotto,
-        scadenza: scadenza,
-        fiale_rimaste: fiale,
-        unita_per_scatola: unitaPerScatola || 5
+        farmaco_id: farmacoId, lotto: lotto, scadenza: scadenza,
+        fiale_rimaste: fiale, unita_per_scatola: unitaPerScatola || 5
       });
     }
     await RemoteApi.refresh(true);
@@ -1603,15 +1706,19 @@ const RemoteApi={
   async reset(){ 
     await RemoteApi.act('reset'); 
     S.token=null; S.publicInfo=null; clearRemoteData(); 
-    localStorage.removeItem(LS_SNOOZE_KEY);
-    localStorage.removeItem(LS_NEGATI_KEY);
+    localStorage.removeItem(LS_SNOOZE_KEY); localStorage.removeItem(LS_NEGATI_KEY);
     await loadPublic(); 
   }
 };
 const Api=REMOTE_ON?RemoteApi:LocalApi;
 
 const A={
-  goView(d){ S.view=d.v; S.flow=null; S.confirmTake=false; render(); window.scrollTo(0,0); },
+  goMasterHome(){ S.view='coord'; S.tab='master'; S.flow=null; render(); window.scrollTo(0,0); },
+  goView(d){
+    S.view=d.v; S.flow=null; S.confirmTake=false;
+    if(d.v==='coord' && S.tab==='master') S.tab='stato';
+    render(); window.scrollTo(0,0);
+  },
   goHome(){ S.view='home'; S.flow=null; render(); window.scrollTo(0,0); },
   cancelFlow(){ S.view='home'; S.flow=null; render(); window.scrollTo(0,0); },
   setTab(d){ S.tab=d.t; S.codeFlow=null; S.coordForm=null; S.ackId=null; S.resetStep=0; S.delAsk=null; S.swipeOpen=null; render(); },
@@ -1620,17 +1727,17 @@ const A={
   closeMyPin(){ S.showMyPinModal=false; render(); },
   openAssocLotto(d){ S.assocLottoFarmacoId = d.id; render(); },
   closeAssocLotto(){ S.assocLottoFarmacoId = null; render(); },
+  openNewReparto(){ S.newRepartoModal=true; render(); },
+  closeNewReparto(){ S.newRepartoModal=false; render(); },
+  async switchReparto(d){
+    await Api.switchReparto(d.id);
+    S.view='coord';
+    S.tab='stato';
+    render();
+    toast('Reparto attivo: '+(cfg().reparto||''));
+  },
   startRecovery(){ S.recoveryFlow={step:1,mat:val('l-mat'),emailMasked:'',err:''}; render(); },
   cancelRecovery(){ S.recoveryFlow=null; render(); },
-  fillUser(d){
-    const matInput = $('#l-mat');
-    const pinInput = $('#l-pin');
-    if(matInput) matInput.value = d.m;
-    if(pinInput) {
-      pinInput.value = '';
-      pinInput.focus();
-    }
-  },
   async verificaTurno(){
     const st = stock();
     const riepilogo = farmaci().map(f => `${f.nome}: ${st[f.id]||0}`).join(', ');
@@ -1644,7 +1751,6 @@ const A={
     if(!l) return;
     const f = fById(l.farmacoId || l.farmaco_id);
     const rimaste = Number(l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0;
-
     await Api.accantonaReso(lottoId, `Accantonato per reso a farmacia: ${f.nome} · Lotto ${l.lotto} (${fiale(rimaste)})`);
     render();
     toast(`Lotto ${l.lotto} accantonato nei resi e rimosso dai prelievi.`);
@@ -1655,7 +1761,6 @@ const A={
     if(!l) return;
     const f = fById(l.farmacoId || l.farmaco_id);
     const rimaste = Number(l.fialeRimaste != null ? l.fialeRimaste : l.fiale_rimaste) || 0;
-
     await Api.confermaResoFarmacia(lottoId, `Consegnato a farmacia ospedaliera per smaltimento/reso: ${f.nome} · Lotto ${l.lotto} (${fiale(rimaste)})`);
     render();
     toast('Reso alla farmacia confermato e archiviato nel database.');
@@ -1706,10 +1811,7 @@ const A={
   async markTranscribed(){ const F=S.flow; F.evt=await Api.transcribed(F.evt); render(); },
   async markTranscribedById(d){
     const e = S.events.find(x => x.id === d.id);
-    if(e){
-      e.trascritto = true;
-      e.trascrittoTs = Date.now();
-    }
+    if(e){ e.trascritto = true; e.trascrittoTs = Date.now(); }
     await Api.transcribed({ id: d.id });
     render();
     toast('Prelievo confermato come trascritto sul registro.');
@@ -1717,53 +1819,36 @@ const A={
   anotherPrelievo(){
     const q={}; farmaci().forEach(f=>q[f.id]=0);
     S.flow={step:1,qty:q,paziente:'',motivo:'somministrazione',note:'',verified:{},err:''};
-    S.view='prelievo';
-    render();
-    window.scrollTo(0,0);
+    S.view='prelievo'; render(); window.scrollTo(0,0);
   },
   async farmacoToggle(d){
-    const list=farmaciTutti().map(f=>{
-      if(f.id===d.id) return Object.assign({},f,{attivo:f.attivo===false?true:false});
-      return f;
-    });
-    await Api.farmaci(list);
-    render();
-    toast('Stato farmaco aggiornato.');
+    const list=farmaciTutti().map(f=>f.id===d.id?Object.assign({},f,{attivo:f.attivo===false?true:false}):f);
+    await Api.farmaci(list); render(); toast('Stato farmaco aggiornato.');
   },
   ackOpen(d){ S.ackId=d.id; render(); const t=$('#ack-note'); if(t) t.focus(); },
   ackLottoExp(d){
-    S.ackId = d.id;
-    render();
+    S.ackId = d.id; render();
     const t = $('#ack-note');
-    if(t) {
-      t.value = 'Presa visione della scadenza. Monitoraggio attivo in cassaforte.';
-      t.focus();
-    }
+    if(t){ t.value = 'Presa visione della scadenza. Monitoraggio attivo in cassaforte.'; t.focus(); }
   },
   ackAccessiNegati(d){
-    S.ackId = d.id;
-    render();
+    S.ackId = d.id; render();
     const t = $('#ack-note');
-    if(t) {
-      t.value = 'Verificati accessi falliti con il personale in turno. Nessuna anomalia.';
-      t.focus();
-    }
+    if(t){ t.value = 'Verificati accessi falliti con il personale in turno. Nessuna anomalia.'; t.focus(); }
   },
   async snoozeLotto7(d){
     const lottoId = d.lottoId || d.id.replace('exp_','');
     const until = Date.now() + (7 * 86400000);
     persistSnooze(lottoId, until);
     await addEvent('gestione_scadenza', { lottoId, untilTs: until, nota: 'Avviso scadenza lotto posticipato di 7 giorni' }).catch(()=>{});
-    render();
-    toast('Segnalazione posticipata di 7 giorni.');
+    render(); toast('Segnalazione posticipata di 7 giorni.');
   },
   async snoozeLotto15(d){
     const lottoId = d.lottoId || d.id.replace('exp_','');
     const until = Date.now() + (15 * 86400000);
     persistSnooze(lottoId, until);
     await addEvent('gestione_scadenza', { lottoId, untilTs: until, nota: 'Avviso scadenza lotto posticipato di 15 giorni' }).catch(()=>{});
-    render();
-    toast('Segnalazione posticipata di 15 giorni.');
+    render(); toast('Segnalazione posticipata di 15 giorni.');
   },
   ackCancel(){ S.ackId=null; render(); },
   gotoCarico(){ S.tab='stato'; S.coordForm='carico'; S.scrollTo='sez-giacenze'; render(); },
@@ -1785,22 +1870,17 @@ const A={
   },
   async exportCSV(){
     const flt=(FILTERS.find(f=>f[0]===S.filter)||FILTERS[0])[2];
-    const rows=[['Data','Ora','Tipo','Operatore','Matricola','Dettaglio','Trascritto sul registro','Presa visione']];
+    const rows=[['Reparto','Data','Ora','Tipo','Operatore','Matricola','Dettaglio','Trascritto sul registro','Presa visione']];
     S.events.filter(flt).forEach(e=>{
       const op = resolveOperator(e);
       rows.push([
-        ddmmyyyy(e.ts),
-        hhmm(e.ts),
-        TYPE[e.type]||e.type,
-        op,
-        e.by||'',
-        detailText(e),
-        e.type==='prelievo'?(e.trascritto?'sì':'no'):'',
+        cfg().reparto||'', ddmmyyyy(e.ts), hhmm(e.ts), TYPE[e.type]||e.type, op, e.by||'',
+        detailText(e), e.type==='prelievo'?(e.trascritto?'sì':'no'):'',
         e.gestito?(resolveOperator(e.gestito)+' '+ddmmyyyy(e.gestito.ts)+' '+(e.gestito.note||'')):''
       ]);
     });
     const csv='﻿'+rows.map(r=>r.map(c=>'"'+String(c==null?'':c).replace(/"/g,'""')+'"').join(';')).join('\r\n');
-    await saveFile('registro-keybox-'+dayKey(Date.now())+'.csv',csv);
+    await saveFile('registro-keybox-'+(cfg().reparto||'reparto').toLowerCase().replace(/[^a-z0-9]/g,'-')+'-'+dayKey(Date.now())+'.csv',csv);
   },
   pinOpen(d){ S.pinFor=d.id; render(); const p=$('#pn-pin'); if(p) p.focus(); },
   pinCancel(){ S.pinFor=null; render(); },
@@ -1832,51 +1912,66 @@ const SUBMIT={
   async login(){
     if(S.lockUntil>Date.now()) return;
     const mat=val('l-mat'), pin=val('l-pin');
-    try{ await Api.login(mat,pin); }
+    const repSel = document.getElementById('l-rep');
+    const repId = repSel ? repSel.value : S.selectedRepartoId;
+    try{ await Api.login(mat,pin,repId); }
     catch(e){
       if(!(e&&e.user)) throw e;
       S.fails++; S.loginErr=e.user; S.loginMat=mat;
       if(!REMOTE_ON&&S.fails>=5){ S.lockUntil=Date.now()+60000; S.fails=0; }
       render(); const p=$('#l-pin'); if(p&&S.lockUntil<Date.now()) p.focus(); return;
     }
-    S.fails=0; S.loginErr=''; S.loginMat=''; S.lastActivity=Date.now(); S.view='home'; saveSession(); render(); window.scrollTo(0,0);
+    S.fails=0; S.loginErr=''; S.loginMat=''; S.lastActivity=Date.now();
+    if(!isMaster()) S.view='home';
+    saveSession(); render(); window.scrollTo(0,0);
+  },
+  async createReparto(){
+    const rep=val('nr-rep'), nome=val('nr-nome'), email=val('nr-email'), mat=val('nr-mat'), pin=val('nr-pin'), code=val('nr-code');
+    const gMorf = Number(val('nr-g-morfina')) || 0;
+    const gFent = Number(val('nr-g-fentanyl')) || 0;
+    const err=$('#nr-err');
+    if(!rep){ err.textContent='Inserisci il nome del reparto.'; return; }
+    if(!nome){ err.textContent='Inserisci nome e cognome del coordinatore.'; return; }
+    if(!email||!/^\S+@\S+\.\S+$/.test(email)){ err.textContent='Inserisci un indirizzo email valido.'; return; }
+    if(!/^[A-Za-z0-9]{3,12}$/.test(mat)){ err.textContent='La matricola deve avere da 3 a 12 caratteri.'; return; }
+    if(!/^\d{4,6}$/.test(pin)){ err.textContent='Il PIN deve avere da 4 a 6 cifre.'; return; }
+    if(!/^\d{5}$/.test(code)){ err.textContent='Il codice keybox deve avere 5 cifre.'; return; }
+
+    try{
+      await Api.createReparto({
+        reparto: rep, nome, email, matricola: mat, pin, codice: code,
+        giacenza: { morfina: gMorf, fentanyl: gFent }
+      });
+      S.newRepartoModal = false;
+      S.view = 'coord';
+      S.tab = 'master';
+      render();
+      toast('Nuovo reparto "'+rep+'" attivato con successo!');
+    }catch(e){
+      err.textContent = errMsg(e);
+    }
   },
   async reqOtp(){
     const mat=val('rec-mat'); const err=$('#rec-err');
     if(!mat){ err.textContent='Inserisci la matricola.'; return; }
     try{
       const res = await Api.reqOtp(mat);
-      S.recoveryFlow = {
-        step: 2,
-        mat: mat,
-        emailMasked: res.email_masked || 'email registrata',
-        err: ''
-      };
+      S.recoveryFlow = { step: 2, mat: mat, emailMasked: res.email_masked || 'email registrata', err: '' };
       render();
-    }catch(e){
-      err.textContent = errMsg(e);
-    }
+    }catch(e){ err.textContent = errMsg(e); }
   },
   async verifyOtp(){
     const rf = S.recoveryFlow;
-    const otp = val('rec-otp');
-    const p1 = val('rec-pin');
-    const p2 = val('rec-conf');
+    const otp = val('rec-otp'), p1 = val('rec-pin'), p2 = val('rec-conf');
     const err = $('#rec-err2');
-    
     if(!/^\d{6}$/.test(otp)){ err.textContent='Inserisci il codice OTP numerico a 6 cifre.'; return; }
     if(!/^\d{4,6}$/.test(p1)){ err.textContent='Il nuovo PIN deve avere da 4 a 6 cifre numeriche.'; return; }
     if(p1 !== p2){ err.textContent='I due PIN inseriti non coincidono.'; return; }
-
     try{
       await Api.verifyOtpAndReset(rf.mat, otp, p1);
-      S.recoveryFlow = null;
-      S.loginMat = rf.mat;
-      render();
-      toast('PIN coordinatore reimpostato con successo! Accedi ora.');
-    }catch(e){
-      err.textContent = errMsg(e);
-    }
+      S.recoveryFlow = null; S.loginMat = rf.mat; render();
+      toast('PIN reimpostato con successo! Accedi ora.');
+    }catch(e){ err.textContent = errMsg(e); }
   },
   async saveMustChangePin(){
     const p1=val('ch-new'), p2=val('ch-conf'); const err=$('#ch-err');
@@ -1884,17 +1979,14 @@ const SUBMIT={
     if(p1!==p2){ err.textContent='I due PIN inseriti non coincidono.'; return; }
     await Api.changeMyPin(p1);
     if(me()) me().deveCambiarePin=false;
-    render();
-    toast('PIN personale impostato con successo.');
+    render(); toast('PIN personale impostato con successo.');
   },
   async saveMyPin(){
     const p1=val('mp-new'), p2=val('mp-conf'); const err=$('#mp-err');
     if(!/^\d{4,6}$/.test(p1)){ err.textContent='Il PIN deve avere da 4 a 6 cifre numeriche.'; return; }
     if(p1!==p2){ err.textContent='I due PIN inseriti non coincidono.'; return; }
     await Api.changeMyPin(p1);
-    S.showMyPinModal=false;
-    render();
-    toast('PIN aggiornato.');
+    S.showMyPinModal=false; render(); toast('PIN aggiornato.');
   },
   async salvaAssocLotto(){
     const fId = S.assocLottoFarmacoId;
@@ -1903,19 +1995,14 @@ const SUBMIT={
     const fialeNum = Number(val('as-fiale')) || 0;
     const unita = Number(val('as-unita')) || 5;
     const err = $('#as-err');
-
     if(!lotto){ err.textContent = 'Inserisci il codice del lotto.'; return; }
     if(!exp){ err.textContent = 'Seleziona il mese e anno di scadenza.'; return; }
     if(fialeNum <= 0){ err.textContent = 'Indica un numero di fiale valido maggiore di 0.'; return; }
-
     try {
       await Api.associaLottoEsistente(fId, lotto, exp, fialeNum, unita);
-      S.assocLottoFarmacoId = null;
-      render();
+      S.assocLottoFarmacoId = null; render();
       toast(`Lotto ${lotto} associato con successo (${fiale(fialeNum)}).`);
-    } catch(e) {
-      err.textContent = errMsg(e);
-    }
+    } catch(e) { err.textContent = errMsg(e); }
   },
   async setup(){
     const rep=val('su-rep'), nome=val('su-nome'), email=val('su-email'), mat=val('su-mat'), pin=val('su-pin'), code=val('su-code'); const err=$('#su-err');
@@ -1935,14 +2022,11 @@ const SUBMIT={
   },
   async carico(){
     const delta={}; const lotti=[]; let any=false, bad=false;
-    
     farmaci().forEach(f=>{
-      const scatVal = val('ca-scat-'+f.id);
-      const scat = Number(scatVal) || 0;
+      const scat = Number(val('ca-scat-'+f.id)) || 0;
       const unita = Number(val('ca-unita-'+f.id)) || (f.unitaPerScatola || 5);
       const lot = val('ca-lot-'+f.id);
       const exp = val('ca-exp-'+f.id);
-
       if(scat > 0){
         if(!lot || !exp){
           bad = true;
@@ -1951,21 +2035,12 @@ const SUBMIT={
         }
         const totFiale = scat * unita;
         delta[f.id] = (delta[f.id] || 0) + totFiale;
-        lotti.push({
-          farmacoId: f.id,
-          scatole: scat,
-          unitaPerScatola: unita,
-          fiale: totFiale,
-          lotto: lot.toUpperCase(),
-          scadenza: exp
-        });
+        lotti.push({ farmacoId: f.id, scatole: scat, unitaPerScatola: unita, fiale: totFiale, lotto: lot.toUpperCase(), scadenza: exp });
         any = true;
       }
     });
-
     if(bad) return;
     if(!any){ $('#ca-err').textContent='Indica almeno una scatola da caricare.'; return; }
-    
     await Api.carico(delta, val('ca-rif'), lotti);
     S.coordForm=null; render(); toast('Carico registrato: '+deltaText(delta,true)+' con tracciabilità lotti.');
   },
@@ -1977,33 +2052,19 @@ const SUBMIT={
     S.coordForm=null; S.rettPrefill=null; render(); toast('Giacenza rettificata.');
   },
   async ackSaveGeneric(f){
-    const alertId = f.dataset.alertId;
-    const lottoId = f.dataset.lottoId;
-    const evtId = f.dataset.evtId;
-    const note = val('ack-note');
-
+    const alertId = f.dataset.alertId, lottoId = f.dataset.lottoId, evtId = f.dataset.evtId, note = val('ack-note');
     if(alertId === 'sec_negati'){
-      const now = Date.now();
-      persistDismissNegati(now);
-      await addEvent('gestione_accessi_negati', {
-        nota: `Presa visione accessi negati: ${note || 'Verificato con il personale in turno'}`
-      });
+      persistDismissNegati(Date.now());
+      await addEvent('gestione_accessi_negati', { nota: `Presa visione accessi negati: ${note || 'Verificato con il personale in turno'}` });
     } else if(lottoId){
       const forever = Date.now() + (365 * 86400000);
       persistSnooze(lottoId, forever);
-      await addEvent('gestione_scadenza', {
-        lottoId,
-        untilTs: forever,
-        nota: `Presa visione scadenza lotto: ${note || 'Nessuna nota aggiuntiva'}`
-      });
+      await addEvent('gestione_scadenza', { lottoId, untilTs: forever, nota: `Presa visione scadenza lotto: ${note || 'Nessuna nota aggiuntiva'}` });
     } else if(evtId){
       const e = S.events.find(x => x.id === evtId);
       if(e) await Api.ack(e, note);
     }
-
-    S.ackId = null;
-    render();
-    toast('Presa visione registrata.');
+    S.ackId = null; render(); toast('Presa visione registrata.');
   },
   async codeManual(){ const c=val('cm-code'); const w=isWeak(c); if(w){ $('#cm-err').textContent=w; return; } S.codeFlow={step:1,code:c}; render(); },
   async regoleSave(){
@@ -2012,68 +2073,30 @@ const SUBMIT={
     await Api.rules({rotazioneGiorni:rot,timeoutChiaveMin:key,sessioneMin:ses}); render(); toast('Regole salvate.');
   },
   async farmaciSave(){
-    const list=farmaciTutti().map(f=>{
-      const nomeInput = val('fa-nome-'+f.id);
-      const saleInput = val('fa-sale-'+f.id);
-      const dosInput  = val('fa-dos-'+f.id);
-      const unitaInput= val('fa-unita-'+f.id);
-      const sogInput  = val('fa-sog-'+f.id);
-      return Object.assign({}, f, {
-        nome: nomeInput || f.nome,
-        sale: saleInput != null ? saleInput : f.sale,
-        dosaggio: dosInput || f.dosaggio,
-        unitaPerScatola: Math.max(1, Number(unitaInput) || 5),
-        soglia: Math.max(0, Number(sogInput) || 0)
-      });
-    });
-    await Api.farmaci(list);
-    render();
-    toast('Farmaci salvati con successo.');
+    const list=farmaciTutti().map(f=>Object.assign({}, f, {
+      nome: val('fa-nome-'+f.id) || f.nome,
+      sale: val('fa-sale-'+f.id) != null ? val('fa-sale-'+f.id) : f.sale,
+      dosaggio: val('fa-dos-'+f.id) || f.dosaggio,
+      unitaPerScatola: Math.max(1, Number(val('fa-unita-'+f.id)) || 5),
+      soglia: Math.max(0, Number(val('fa-sog-'+f.id)) || 0)
+    }));
+    await Api.farmaci(list); render(); toast('Farmaci salvati con successo.');
   },
   async farmacoAdd(){
     const nome=val('nf-nome'), sale=val('nf-sale'), dos=val('nf-dos'), sigla=val('nf-sigla');
     const unita=Number(val('nf-unita'))||5, sog=Number(val('nf-sog'))||0, init=Number(val('nf-init'))||0;
     const lottoInit=val('nf-lotto').toUpperCase(), expInit=val('nf-exp');
     const err=$('#nf-err');
-    
     if(!nome){ err.textContent='Inserisci il nome del farmaco.'; return; }
     if(!dos){ err.textContent='Inserisci il dosaggio.'; return; }
     if(!sigla){ err.textContent='Inserisci la sigla per il badge (1 o 2 lettere).'; return; }
-    if(init > 0 && (!lottoInit || !expInit)){
-      err.textContent='Se inserisci una giacenza iniziale, indica anche il Lotto e la Scadenza.';
-      return;
-    }
-    
+    if(init > 0 && (!lottoInit || !expInit)){ err.textContent='Se inserisci una giacenza iniziale, indica anche il Lotto e la Scadenza.'; return; }
     const id=nome.toLowerCase().replace(/[^a-z0-9]/g,'')+'_'+Date.now().toString(36).slice(-3);
-    const nuovo={
-      id,
-      nome,
-      sale,
-      dosaggio: dos,
-      forma: 'fiala',
-      sigla: sigla.toUpperCase(),
-      tema: 'm',
-      unitaPerScatola: unita,
-      soglia: sog,
-      attivo: true,
-      giacenzaIniziale: init
-    };
-    
-    const list=farmaciTutti().concat([nuovo]);
-    await Api.farmaci(list);
-    
-    if(init > 0){
-      await Api.associaLottoEsistente(id, lottoInit, expInit, init, unita);
-    }
-    
-    if(!REMOTE_ON){
-      const st=stock();
-      st[id]=init;
-      await Store.merge('app/state',{giacenza:st});
-    }
-    
-    render();
-    toast(nome+' aggiunto alla cassaforte con '+fiale(init)+'.');
+    const nuovo={ id, nome, sale, dosaggio: dos, forma: 'fiala', sigla: sigla.toUpperCase(), tema: 'm', unitaPerScatola: unita, soglia: sog, attivo: true, giacenzaIniziale: init };
+    await Api.farmaci(farmaciTutti().concat([nuovo]));
+    if(init > 0) await Api.associaLottoEsistente(id, lottoInit, expInit, init, unita);
+    if(!REMOTE_ON){ const st=stock(); st[id]=init; await Store.merge('app/state',{giacenza:st}); }
+    render(); toast(nome+' aggiunto alla cassaforte con '+fiale(init)+'.');
   },
   async staffAdd(){
     const nome=val('sa-nome'), mat=val('sa-mat'), pin=val('sa-pin'), ruolo=val('sa-ruolo'); const err=$('#sa-err');
@@ -2107,7 +2130,6 @@ document.addEventListener('input',e=>{
   const el=e.target; 
   const b=el.dataset&&el.dataset.bind;
   if(b){ const k=b.split('.'); let t=S; for(let i=0;i<k.length-1;i++){ if(t[k[i]]==null) t[k[i]]={}; t=t[k[i]]; } t[k[k.length-1]]=el.value; }
-  
   if(el.dataset && el.dataset.calcCarico){
     const fid = el.dataset.calcCarico;
     const scat = parseInt(val('ca-scat-'+fid), 10) || 0;
@@ -2118,7 +2140,13 @@ document.addEventListener('input',e=>{
   }
 });
 document.addEventListener('change',e=>{
-  const el=e.target; if(el.dataset&&el.dataset.verify&&S.flow){
+  const el=e.target;
+  if(el.id === 'l-rep'){
+    S.selectedRepartoId = Number(el.value);
+    render();
+    return;
+  }
+  if(el.dataset&&el.dataset.verify&&S.flow){
     S.flow.verified[el.dataset.verify]=el.checked;
     const sel=farmaci().filter(f=>(S.flow.qty[f.id]||0)>0); const btn=$('#confirmBtn'); if(btn) btn.disabled=!sel.every(f=>S.flow.verified[f.id]);
   }
@@ -2191,7 +2219,7 @@ async function boot(){
   if(REMOTE_ON){
     try{ await loadPublic(); }catch(e){ S.loadError=true; S.loadErrorMsg=errMsg(e); render(); return; }
     S.loaded=true;
-    try{ const raw=sessionStorage.getItem(SS_KEY); if(raw){ const s=JSON.parse(raw); if(s&&s.token&&Date.now()-s.last<((S.config&&S.config.sessioneMin)||5)*60000){ S.token=s.token; S.lastActivity=Date.now(); try{ await Api.refresh(true); }catch(e){ S.token=null; clearRemoteData(); saveSession(); } } } }catch(e){}
+    try{ const raw=sessionStorage.getItem(SS_KEY); if(raw){ const s=JSON.parse(raw); if(s&&s.token&&Date.now()-s.last<((S.config&&S.config.sessioneMin)||5)*60000){ S.token=s.token; S.lastActivity=Date.now(); try{ await Api.refresh(true); if(isMaster()){ S.view='coord'; S.tab='master'; } }catch(e){ S.token=null; clearRemoteData(); saveSession(); } } } }catch(e){}
     render(); setInterval(tick,1000); return;
   }
   await Store.init();
