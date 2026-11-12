@@ -291,7 +291,11 @@ const TYPE={
   rettifica:'Rettifica giacenza',
   codice_cambiato:'Codice keybox cambiato',
   accesso_negato:'Accesso negato',
-  personale_rimosso:'Personale eliminato',
+  personale_profilato:'Profilazione nuovo operatore',
+  personale_stato:'Modifica stato abilitazione operatore',
+  personale_rimosso:'Revoca / Eliminazione operatore',
+  sicurezza_pin_attivato:'Attivazione / Modifica PIN personale',
+  sicurezza_reset_pin_coord:'Reset PIN provvisorio (Coordinatore)',
   sicurezza_richiesta_otp:'Richiesta recupero PIN',
   sicurezza_pin_ripristinato:'PIN ripristinato con OTP',
   censimento_lotto:'Censimento lotto iniziale',
@@ -329,6 +333,10 @@ function detailText(e,short){
     case 'chiave_passata': return 'Da '+(e.daNome||'?')+' a '+(e.byName||'?');
     case 'accesso_negato': return 'Matricola inserita: '+(e.matricola||'?');
     case 'personale_rimosso': return (e.nome||'?')+' · matricola '+(e.matricola||'?');
+    case 'personale_profilato':
+    case 'personale_stato':
+    case 'sicurezza_pin_attivato':
+    case 'sicurezza_reset_pin_coord':
     case 'chiave_presa': return e.nota||'';
     default: return (e.nota||'');
   }
@@ -360,7 +368,7 @@ function rowHTML(e){
   if(e.type==='verifica_turno') meta.push('<span class="pill ok">Controllo turno</span>');
   if(e.type==='accantonamento_reso'||e.type==='conferma_reso_farmacia') meta.push('<span class="pill warn">Reso farmacia</span>');
   if(e.type==='chiave_riposta'&&typeof e.durataMin==='number'&&e.durataMin>(cfg().timeoutChiaveMin||15)) meta.push('<span class="pill warn">Oltre il limite</span>');
-  if(e.type==='accesso_negato'||/^sicurezza/.test(e.type)||e.type==='gestione_accessi_negati') meta.push('<span class="pill warn">Sicurezza</span>');
+  if(e.type==='accesso_negato'||/^sicurezza/.test(e.type)||/^personale/.test(e.type)||e.type==='gestione_accessi_negati') meta.push('<span class="pill info">Audit & Profilazione</span>');
   if(e.gestito){
     meta.push(`<span class="pill">Presa visione Coord.: ${esc(first(e.gestito.byName))} ${hhmm(e.gestito.ts)}</span>`);
     if(e.gestito.inviatoMaster) meta.push(`<span class="pill info">Trasmesso al Master / Farmacia</span>`);
@@ -1425,7 +1433,7 @@ function tabSegnalazioni(){
   }).join('')}</div>`;
 }
 
-const FILTERS=[['tutti','Tutti',()=>true],['chiave','Chiave',e=>/^chiave/.test(e.type)],['prelievo','Prelievi',e=>e.type==='prelievo'],['datrascrivere','Da trascrivere',e=>e.type==='prelievo'&&!e.trascritto],['giacenze','Carichi, rettifiche e turni',e=>e.type==='carico'||e.type==='rettifica'||e.type==='censimento_lotto'||e.type==='verifica_turno'||e.type==='accantonamento_reso'||e.type==='conferma_reso_farmacia'],['sicurezza','Codice, accessi e personale',e=>e.type==='codice_cambiato'||e.type==='accesso_negato'||e.type==='personale_rimosso'||/^sicurezza/.test(e.type)||e.type==='gestione_scadenza'||e.type==='gestione_accessi_negati']];
+const FILTERS=[['tutti','Tutti',()=>true],['chiave','Chiave',e=>/^chiave/.test(e.type)],['prelievo','Prelievi',e=>e.type==='prelievo'],['datrascrivere','Da trascrivere',e=>e.type==='prelievo'&&!e.trascritto],['giacenze','Carichi, rettifiche e turni',e=>e.type==='carico'||e.type==='rettifica'||e.type==='censimento_lotto'||e.type==='verifica_turno'||e.type==='accantonamento_reso'||e.type==='conferma_reso_farmacia'],['sicurezza','Codice, accessi e profilazione',e=>e.type==='codice_cambiato'||e.type==='accesso_negato'||/^personale/.test(e.type)||/^sicurezza/.test(e.type)||e.type==='gestione_scadenza'||e.type==='gestione_accessi_negati']];
 
 function tabRegistro(){
   const flt=(FILTERS.find(f=>f[0]===S.filter)||FILTERS[0])[2];
@@ -1595,8 +1603,12 @@ function tabImpostazioni(){
     </section>
 
     <section class="panel"><div class="sec-h"><h2>Personale</h2><span class="muted" style="font-size:14px">${staff.filter(s=>s.attivo!==false).length} attivi</span></div>
-      <p class="fine">Scorri una persona verso sinistra per eliminarla.</p>
-      <div>${staff.map(s=>{ const canDel=s.id!==S.meId; return `<div class="staff-item"><div class="swipe${S.swipeOpen===s.id?' open':''}"${canDel?` data-swipe="${esc(s.id)}"`:''}>${canDel?`<button class="swipe-del" data-act="staffDelAsk" data-id="${esc(s.id)}">Elimina</button>`:''}<div class="staff"><div><b>${esc(s.nome)}</b> ${s.attivo===false?'<span class="pill">Disattivato</span>':''}<div class="row-s">${s.ruolo==='coordinatore'?'Coordinatore':'Infermiere'} · matricola <span class="mono">${esc(s.id)}</span></div></div>
+      <p class="fine">Scorri una persona verso sinistra per eliminarla. Ogni creazione, sospensione o attivazione PIN è tracciata nel registro.</p>
+      <div>${staff.map(s=>{
+        const canDel=s.id!==S.meId;
+        const profEvt = S.events.find(e => e.type === 'personale_profilato' && e.matricola === s.id);
+        const profInfo = profEvt ? ` · Profilato il ${ddmmyyyy(profEvt.ts)}` : '';
+        return `<div class="staff-item"><div class="swipe${S.swipeOpen===s.id?' open':''}"${canDel?` data-swipe="${esc(s.id)}"`:''}>${canDel?`<button class="swipe-del" data-act="staffDelAsk" data-id="${esc(s.id)}">Elimina</button>`:''}<div class="staff"><div><b>${esc(s.nome)}</b> ${s.attivo===false?'<span class="pill">Disattivato</span>':''} ${s.deveCambiarePin?'<span class="pill warn">PIN provvisorio</span>':''}<div class="row-s">${s.ruolo==='coordinatore'?'Coordinatore':'Infermiere'} · matricola <span class="mono">${esc(s.id)}</span>${profInfo}</div></div>
         <div class="btns"><button class="btn btn-quiet btn-sm" data-act="pinOpen" data-id="${esc(s.id)}">Resetta PIN</button>${s.id!==S.meId?`<button class="btn btn-quiet btn-sm" data-act="staffToggle" data-id="${esc(s.id)}">${s.attivo===false?'Riattiva':'Disattiva'}</button>`:''}</div></div></div>
         ${S.delAsk===s.id?`<div class="subform del-ask"><p><b>Eliminare ${esc(s.nome)}?</b></p><p class="sub">Non potrà più accedere all\u2019app. I movimenti già registrati restano nel registro con il suo nome.</p><div class="btns"><button class="btn btn-danger btn-sm" data-act="staffDel" data-id="${esc(s.id)}">Elimina definitivamente</button><button type="button" class="btn btn-quiet btn-sm" data-act="staffDelCancel">Annulla</button></div></div>`:''}
         ${S.pinFor===s.id?`<form class="subform" data-submit="pinSave" data-id="${esc(s.id)}" novalidate><label class="field"><span>Nuovo PIN provvisorio per ${esc(s.nome)}</span><input id="pn-pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"><small>Dovrà reimpostarlo al login successivo.</small></label><p class="err" id="pn-err"></p><div class="btns"><button class="btn btn-primary btn-sm">Salva il PIN provvisorio</button><button type="button" class="btn btn-quiet btn-sm" data-act="pinCancel">Annulla</button></div></form>`:''}</div>`; }).join('')}</div>
@@ -1612,7 +1624,7 @@ function tabImpostazioni(){
     <section class="panel">
       <div class="sec-h"><h2>Integrità e Immutabilità Dati</h2><span class="pill ok">D.M. 15/09/2026</span></div>
       <p class="sub">${modeText()}</p>
-      <p class="fine">In conformità all'Art. 12 del D.M. 15 settembre 2026, le registrazioni cliniche e di movimentazione sono protette da trigger di immutabilità cronologica: ogni rettifica o evento avverso viene storicizzato senza cancellazione dei dati pregressi.</p>
+      <p class="fine">In conformità all'Art. 12 del D.M. 15 settembre 2026, le registrazioni cliniche, di movimentazione e di profilazione del personale sono protette da trigger di immutabilità cronologica: ogni rettifica, abilitazione o evento avverso viene storicizzato senza cancellazione dei dati pregressi.</p>
     </section>
   </div>`;
 }
@@ -1672,6 +1684,7 @@ const LocalApi={
     const h=await pinHash(S.meId,pin);
     await Store.merge('staff/'+S.meId,{pinHash:h,deveCambiarePin:false});
     if(S.meUser) S.meUser.deveCambiarePin=false;
+    await addEvent('sicurezza_pin_attivato',{nota:'Aggiornamento PIN personale'});
   },
   async reqOtp(mat){
     const s=S.staff[mat];
@@ -1785,9 +1798,20 @@ const LocalApi={
   async codeSet(code){ await Store.merge('app/config',{codice:code,codiceDal:Date.now(),codiceDa:S.meId,codiceDaNome:me().nome}); await addEvent('codice_cambiato',{}); },
   rules(o){ return Store.merge('app/config',o); },
   farmaci(list){ return Store.merge('app/config',{farmaci:list}); },
-  async staffAdd(o){ await Store.set('staff/'+o.matricola,{nome:o.nome,ruolo:o.ruolo,pinHash:await pinHash(o.matricola,o.pin),attivo:true,deveCambiarePin:true}); },
-  staffToggle(id){ const s=S.staff[id]; return Store.merge('staff/'+id,{attivo:!!(s&&s.attivo===false)}); },
-  async staffPin(id,pin){ await Store.merge('staff/'+id,{pinHash:await pinHash(id,pin),deveCambiarePin:true}); },
+  async staffAdd(o){
+    await Store.set('staff/'+o.matricola,{nome:o.nome,ruolo:o.ruolo,pinHash:await pinHash(o.matricola,o.pin),attivo:true,deveCambiarePin:true});
+    await addEvent('personale_profilato',{matricola:o.matricola,nome:o.nome,ruolo:o.ruolo,nota:`Profilo creato per ${o.nome} (matr. ${o.matricola})`});
+  },
+  async staffToggle(id){
+    const s=S.staff[id];
+    const next=!((s&&s.attivo!==false));
+    await Store.merge('staff/'+id,{attivo:next});
+    await addEvent('personale_stato',{matricola:id,nome:s?.nome||id,nota:`${next?'Riattivato':'Sospeso'} accesso per ${s?.nome||id}`});
+  },
+  async staffPin(id,pin){
+    await Store.merge('staff/'+id,{pinHash:await pinHash(id,pin),deveCambiarePin:true});
+    await addEvent('sicurezza_reset_pin_coord',{nota:`Reset PIN provvisorio per ${S.staff[id]?.nome||id}`});
+  },
   async staffDel(id){ const s=S.staff[id]; if(!s) return; await Store.del('staff/'+id); await addEvent('personale_rimosso',{matricola:id,nome:s.nome,ruolo:s.ruolo}); },
   appUrl(u){ return Store.merge('app/config',{appUrl:u}); },
   async reset(){ throw new UserError('Azzeramento bloccato per immutabilità normativa.'); }
@@ -2396,7 +2420,7 @@ const SUBMIT={
     if(S.staff[mat]){ err.textContent='Questa matricola è già presente.'; return; }
     if(!/^\d{4,6}$/.test(pin)){ err.textContent='Il PIN provvisorio deve avere da 4 a 6 cifre.'; return; }
     await Api.staffAdd({nome,matricola:mat,pin,ruolo});
-    render(); toast(nome+' aggiunto con obbligo di cambio PIN al primo accesso.');
+    render(); toast(nome+' aggiunto e profilato con obbligo di cambio PIN al primo accesso.');
   },
   async pinSave(f){
     const id=f.dataset.id, pin=val('pn-pin'); if(!/^\d{4,6}$/.test(pin)){ $('#pn-err').textContent='Il PIN deve avere da 4 a 6 cifre.'; return; }
