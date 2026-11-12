@@ -156,7 +156,7 @@ const initialPersisted = loadPersistedState();
 const S={
   loaded:false, loadError:false, staffLoaded:false, readOnly:false,
   config:null, base:null, key:null, staff:{}, events:[], lotti:[],
-  repartiOverview:[],
+  repartiOverview:[], masterAlerts:[],
   meId:null, meUser:null, view:'home', tab:'stato', flow:null,
   newRepartoModal:false,
   codeShownUntil:0, confirmTake:false,
@@ -350,7 +350,8 @@ function rowHTML(e){
     title='Prelievo · '+deltaText(e.delta);
     if(e.motivo==='rottura') meta.push('<span class="pill crit">Fiala rotta o caduta</span>');
     if(e.trascritto){
-      meta.push('<span class="pill ok">Trascritto sul registro</span>');
+      const rifCart = (e.regPagina || e.regRiga) ? ` (Pag. ${esc(e.regPagina||'—')}, Riga ${esc(e.regRiga||'—')})` : '';
+      meta.push(`<span class="pill ok">Trascritto sul registro${rifCart}</span>`);
     } else {
       meta.push('<span class="pill warn">Da trascrivere</span>');
       rowAction=`<div style="margin-top:6px;"><button class="btn btn-secondary btn-sm" data-act="markTranscribedById" data-id="${esc(e.id)}">Segna come trascritto</button></div>`;
@@ -360,7 +361,11 @@ function rowHTML(e){
   if(e.type==='accantonamento_reso'||e.type==='conferma_reso_farmacia') meta.push('<span class="pill warn">Reso farmacia</span>');
   if(e.type==='chiave_riposta'&&typeof e.durataMin==='number'&&e.durataMin>(cfg().timeoutChiaveMin||15)) meta.push('<span class="pill warn">Oltre il limite</span>');
   if(e.type==='accesso_negato'||/^sicurezza/.test(e.type)||e.type==='gestione_accessi_negati') meta.push('<span class="pill warn">Sicurezza</span>');
-  if(e.gestito) meta.push(`<span class="pill">Presa visione: ${esc(first(e.gestito.byName))} ${hhmm(e.gestito.ts)}</span>`);
+  if(e.gestito){
+    meta.push(`<span class="pill">Presa visione Coord.: ${esc(first(e.gestito.byName))} ${hhmm(e.gestito.ts)}</span>`);
+    if(e.gestito.inviatoMaster) meta.push(`<span class="pill info">Trasmesso al Master / Farmacia</span>`);
+  }
+  if(e.masterAck) meta.push(`<span class="pill ok">Chiuso da Master: ${esc(first(e.masterAck.byName))}</span>`);
 
   const operatore = resolveOperator(e);
   const dettaglio = detailText(e, true);
@@ -374,7 +379,8 @@ function rowHTML(e){
       </div>
       ${dettaglio ? `<div class="row-s" style="margin-top:2px;">${esc(dettaglio)}</div>` : ''}
       ${meta.length ? `<div class="row-meta" style="margin-top:4px;">${meta.join('')}</div>` : ''}
-      ${e.gestito && e.gestito.note ? `<div class="row-s" style="margin-top:2px;font-style:italic;">Nota: ${esc(e.gestito.note)}</div>` : ''}
+      ${e.gestito && e.gestito.note ? `<div class="row-s" style="margin-top:2px;font-style:italic;">Nota Coord.: ${esc(e.gestito.note)}</div>` : ''}
+      ${e.masterAck && e.masterAck.note ? `<div class="row-s" style="margin-top:2px;font-style:italic;">Nota Master: ${esc(e.masterAck.note)}</div>` : ''}
       ${rowAction}
     </div>
   </div>`;
@@ -481,7 +487,15 @@ function alerts(){
   });
 
   S.events.filter(e=>e.type==='prelievo'&&e.motivo==='rottura'&&!e.gestito&&now-e.ts<30*86400000).forEach(e=>{
-    out.push({id:'ack_'+e.id,sev:'warn',t:'Fiala rotta o caduta · '+deltaText(e.delta),s:hhmm(e.ts)+' del '+ddmm(e.ts)+' · '+e.byName+(e.note?' · '+e.note:''),evt:e,acts:[['Presa visione','ackOpen']]});
+    out.push({
+      id:'ack_'+e.id,
+      sev:'crit',
+      isRottura: true,
+      t:'Fiala rotta o caduta · '+deltaText(e.delta),
+      s:hhmm(e.ts)+' del '+ddmm(e.ts)+' · Operatore: '+e.byName+(e.note?' · '+e.note:''),
+      evt:e,
+      acts:[['Valida e trasmetti al Master','ackOpen']]
+    });
   });
   
   farmaci().forEach(f=>{ if((st[f.id]||0)<=(f.soglia||0)) out.push({sev:'warn',t:'Scorta di '+f.nome+' sotto soglia',s:'In cassetta '+fiale(st[f.id]||0)+', soglia di riordino '+f.soglia+'.',acts:[['Registra carico','gotoCarico']]}); });
@@ -560,6 +574,7 @@ function viewTop(){
   const m=me(); const c=cfg(); const n=isCoord()?alerts().length:0;
   const masterBadge = isMaster() ? `<span class="pill ok" style="margin-left:6px;">MASTER</span>` : '';
   const reps = S.repartiOverview || [];
+  const mAlertsCount = (S.masterAlerts || []).length;
 
   return `<header class="top"><div class="top-in">
     <div class="brand"><span class="brand-mark">${IC.box}</span><div><div class="brand-name">Keybox stupefacenti ${masterBadge}</div><div class="brand-sub">${isMaster() && S.tab==='master' ? 'Governance Aziendale · Tutti i reparti' : esc(c.reparto||'')}</div></div></div>
@@ -571,7 +586,7 @@ function viewTop(){
   </div>
   ${isMaster() ? `
     <nav class="switch" aria-label="Reparti" style="flex-wrap:wrap;">
-      <button data-act="goMasterHome" aria-pressed="${S.view==='coord'&&S.tab==='master'}">Cruscotto Aziendale (${reps.length})</button>
+      <button data-act="goMasterHome" aria-pressed="${S.view==='coord'&&S.tab==='master'}">Cruscotto Aziendale (${reps.length})${mAlertsCount?` <span class="count">${mAlertsCount}</span>`:''}</button>
       ${reps.map(r => {
         const isSelected = !(S.view==='coord'&&S.tab==='master') && Number(r.id) === Number(c.id);
         return `<button data-act="switchReparto" data-id="${r.id}" aria-pressed="${isSelected}">${esc(r.reparto)}</button>`;
@@ -770,8 +785,7 @@ function viewSetup(){
 
 function viewLogin(){
   const c=cfg(); const locked=S.lockUntil>Date.now();
-  const repartiList = (S.publicInfo && S.publicInfo.reparti) || [];
-  const subTitle = repartiList.length > 1 ? 'Accesso operatori e coordinamento' : (c.reparto || '');
+  const subTitle = 'Accesso operatori e coordinamento';
 
   return `<main class="wrap">
     <div class="login-hero">
@@ -901,7 +915,7 @@ function viewPrelievo(){
       }).join('')}
       <label class="field"><span>Paziente</span><input id="p-paz" type="text" maxlength="40" data-bind="flow.paziente" value="${esc(F.paziente)}" placeholder="Es. letto 12 o codice ricovero"><small>Non scrivere nome e cognome: il nome va solo sul registro ufficiale.</small></label>
       <div class="field"><span>Motivo</span><div class="seg">${Object.keys(MOTIVO).map(m=>`<button type="button" data-act="setMotivo" data-v="${m}" aria-pressed="${F.motivo===m}">${MOTIVO[m]}</button>`).join('')}</div></div>
-      ${F.motivo!=='somministrazione'?`<label class="field"><span>Cosa è successo</span><textarea id="p-note" maxlength="300" data-bind="flow.note" placeholder="${F.motivo==='rottura'?'Es. fiala caduta durante la preparazione, vetri nel contenitore taglienti':'Descrivi il motivo del prelievo'}">${esc(F.note)}</textarea><small>Il coordinatore riceve una segnalazione.</small></label>`:''}
+      ${F.motivo!=='somministrazione'?`<label class="field"><span>Cosa è successo</span><textarea id="p-note" maxlength="300" data-bind="flow.note" placeholder="${F.motivo==='rottura'?'Es. fiala caduta durante la preparazione, vetri nel contenitore taglienti':'Descrivi il motivo del prelievo'}">${esc(F.note)}</textarea><small>${F.motivo==='rottura'?'Il coordinatore riceverà il verbale e potrà trasmetterlo al Master / Farmacia.':'Il coordinatore riceve una segnalazione.'}</small></label>`:''}
       <p class="err" id="p-err">${esc(F.err||'')}</p>
       <button class="btn btn-primary btn-lg btn-block" data-act="prelievoNext">Continua</button>
       <p class="fine">Se in cassetta trovi un numero di fiale diverso da quello indicato, avvisa il coordinatore.</p>`;
@@ -944,7 +958,7 @@ function viewPrelievo(){
     <div class="done"><span>${IC.check}</span>Prelievo registrato il ${ddmm(e.ts)} alle ${hhmm(e.ts)}</div>
     <section class="block">
       <h2>Riga per il registro di carico e scarico</h2>
-      <p class="lead">Trascrivi subito questi dati sul registro vidimato cartaceo del reparto.</p>
+      <p class="lead">Trascrivi subito questi dati sul registro vidimato cartaceo del reparto e indica pagina e riga per la riconciliazione.</p>
       ${sel.map(id=>{ 
         const f=fById(id);
         const lotti = (e.lottiScalati||[]).filter(x=>String(x.farmacoId||x.farmaco_id)===String(id));
@@ -965,11 +979,15 @@ function viewPrelievo(){
       ${!isTrascritto ? `
         <div class="status warn" style="margin-top:6px;">
           <span class="ico">${IC.alert}</span>
-          <div><strong>Trascrizione obbligatoria</strong><span class="sub">Compila la riga sul registro cartaceo e tocca il tasto qui sotto per sbloccare le azioni successive.</span></div>
+          <div><strong>Trascrizione obbligatoria (D.M. 15/09/2026)</strong><span class="sub">Compila la riga sul registro cartaceo vidimato e inserisci il riferimento di pagina/riga qui sotto.</span></div>
+        </div>
+        <div class="two" style="margin-top:6px;">
+          <label class="field"><span>N° Pagina registro cartaceo</span><input id="tr-pag" type="text" inputmode="numeric" maxlength="10" placeholder="Es. 42"></label>
+          <label class="field"><span>N° Riga</span><input id="tr-rig" type="text" inputmode="numeric" maxlength="10" placeholder="Es. 7"></label>
         </div>
         <button class="btn btn-primary btn-lg btn-block" data-act="markTranscribed">Ho trascritto sul registro ufficiale</button>
       ` : `
-        <div class="row-meta" style="margin-block:10px;"><span class="pill ok">Trascritto sul registro cartaceo alle ${hhmm(e.trascrittoTs||Date.now())}</span></div>
+        <div class="row-meta" style="margin-block:10px;"><span class="pill ok">Trascritto sul registro cartaceo alle ${hhmm(e.trascrittoTs||Date.now())}${(e.regPagina||e.regRiga)?` · Pag. ${esc(e.regPagina||'—')}, Riga ${esc(e.regRiga||'—')}`:''}</span></div>
         <div class="block" style="gap:10px;">
           <button class="btn btn-secondary btn-lg btn-block" data-act="anotherPrelievo">+ Registra un altro prelievo per un altro paziente</button>
           <button class="btn btn-primary btn-lg btn-block" data-act="returnKey">Ho rimesso la chiave nella keybox (Fine)</button>
@@ -980,9 +998,9 @@ function viewPrelievo(){
 
 function viewMasterOverview(){
   const reps = S.repartiOverview || [];
+  const mAlerts = S.masterAlerts || [];
   const now = Date.now();
 
-  // Calcolo aggregato aziendale di tutte le fiale, scadenze e indicatori
   const totPerFarmaco = {};
   let totFialeAzienda = 0;
   let totLottiScaduti = 0;
@@ -1030,10 +1048,53 @@ function viewMasterOverview(){
     <div class="sec-h">
       <div>
         <h2>Cruscotto Aziendale · Farmacia e Governance</h2>
-        <p class="fine">Visione d’insieme delle giacenze, scadenze lotti e indicatori D.M. 15/09/2026 su ${reps.length} Unità Operative.</p>
+        <p class="fine">Supervisione centralizzata su ${reps.length} Unità Operative · D.M. 15/09/2026.</p>
       </div>
-      <button class="btn btn-primary" data-act="openNewReparto">+ Attiva nuovo reparto</button>
+      <div class="btns">
+        <button class="btn btn-secondary" data-act="exportReportVigilanzaGlobal">Esporta Report Vigilanza Aziendale</button>
+        <button class="btn btn-primary" data-act="openNewReparto">+ Attiva nuovo reparto</button>
+      </div>
     </div>
+
+    ${mAlerts.length ? `
+      <section class="panel" style="border-left: 4px solid #DC2626;">
+        <div class="sec-h">
+          <h2>Segnalazioni Fiale Rotte / Discrasie trasmesse dai Coordinatori</h2>
+          <span class="pill crit">${mAlerts.length} da validare</span>
+        </div>
+        <p class="fine">Eventi validati dai Coordinatori di reparto e trasmessi alla Farmacia / Risk Management per il verbale ufficiale.</p>
+        <div class="alerts">
+          ${mAlerts.map(a => {
+            const isOpen = S.ackId === 'master_' + a.id;
+            return `<div class="alert crit">
+              <span class="ico">${IC.alert}</span>
+              <div class="alert-t">${esc(a.reparto)} · ${esc(deltaText(a.delta))}</div>
+              <div class="alert-s">
+                Data: <b>${ddmmyyyy(a.ts)} alle ${hhmm(a.ts)}</b> · Operatore: <b>${esc(a.byName)}</b><br>
+                Descrizione operatore: <i>"${esc(a.note || '—')}"</i><br>
+                Validato dal Coordinatore <b>${esc(a.gestito?.byName || '?')}</b> alle ${hhmm(a.gestito?.ts || a.ts)}: <i>"${esc(a.gestito?.note || 'Confermato')}"</i>
+              </div>
+              ${!isOpen ? `
+                <div class="alert-acts">
+                  <button class="btn btn-secondary btn-sm" data-act="exportVerbaleRottura" data-id="${esc(a.id)}">Scarica Verbale Rottura (CSV)</button>
+                  <button class="btn btn-primary btn-sm" data-act="masterAckOpen" data-id="${esc(a.id)}">Presa in carico Farmacia / Archivia</button>
+                </div>
+              ` : `
+                <form class="subform" data-submit="masterAckSave" data-id="${esc(a.id)}" novalidate>
+                  <label class="field"><span>Nota di chiusura Farmacia / Risk Management</span>
+                    <textarea id="mack-note" maxlength="300" placeholder="Es. Verbale acquisito agli atti della Farmacia Ospedaliera, reintegro autorizzato."></textarea>
+                  </label>
+                  <div class="btns">
+                    <button class="btn btn-primary btn-sm">Conferma e archivia segnalazione</button>
+                    <button type="button" class="btn btn-quiet btn-sm" data-act="ackCancel">Annulla</button>
+                  </div>
+                </form>
+              `}
+            </div>`;
+          }).join('')}
+        </div>
+      </section>
+    ` : ''}
 
     <div class="kpis">
       ${kpi(
@@ -1315,12 +1376,12 @@ function tabSegnalazioni(){
     const isAckThis = (S.ackId === a.id) || (a.evt && S.ackId === a.evt.id);
     
     const ackForm = isAckThis ? `
-      <form class="subform" data-submit="ackSaveGeneric" data-alert-id="${esc(a.id)}" data-lotto-id="${esc(a.lottoId||'')}" data-evt-id="${esc(a.evt?a.evt.id:'')}" novalidate>
-        <label class="field"><span>Nota di presa visione</span>
-          <textarea id="ack-note" maxlength="300" placeholder="Es. Verificato tentativo errato / risolto con l'operatore"></textarea>
+      <form class="subform" data-submit="ackSaveGeneric" data-alert-id="${esc(a.id)}" data-lotto-id="${esc(a.lottoId||'')}" data-evt-id="${esc(a.evt?a.evt.id:'')}" data-is-rottura="${a.isRottura?'1':'0'}" novalidate>
+        <label class="field"><span>${a.isRottura ? 'Relazione del Coordinatore (verrà trasmessa al Master / Farmacia)' : 'Nota di presa visione'}</span>
+          <textarea id="ack-note" maxlength="300" placeholder="${a.isRottura ? 'Es. Verificata rottura accidentale in preparazione, residui smaltiti correttamente. Si trasmette alla Farmacia.' : 'Es. Verificato tentativo errato / risolto con l\'operatore'}"></textarea>
         </label>
         <div class="btns">
-          <button class="btn btn-primary btn-sm">Conferma presa visione</button>
+          <button class="btn btn-primary btn-sm">${a.isRottura ? 'Conferma e trasmetti al Master / Farmacia' : 'Conferma presa visione'}</button>
           <button type="button" class="btn btn-quiet btn-sm" data-act="ackCancel">Annulla</button>
         </div>
       </form>` : '';
@@ -1409,7 +1470,10 @@ function tabIndicatori(){
         <h2>Indicatori di vigilanza (Art. 15, c. 5 · D.M. 15/09/2026)</h2>
         <p class="fine">Monitoraggio continuo dei 5 indicatori ministeriali di sicurezza e tracciabilità del reparto.</p>
       </div>
-      <div class="seg" role="group" aria-label="Periodo">${[7,14,30,90,365].map(p=>`<button data-act="setPeriod" data-p="${p}" aria-pressed="${S.period===p}">${p===365?'1 anno':p+' giorni'}</button>`).join('')}</div>
+      <div class="btns">
+        <button class="btn btn-secondary btn-sm" data-act="exportReportVigilanzaReparto">Esporta Report Vigilanza (CSV)</button>
+        <div class="seg" role="group" aria-label="Periodo">${[7,14,30,90,365].map(p=>`<button data-act="setPeriod" data-p="${p}" aria-pressed="${S.period===p}">${p===365?'1 anno':p+' giorni'}</button>`).join('')}</div>
+      </div>
     </div>
     <div class="kpis">
       ${kpi('1. Corrispondenza delle giacenze', k1Val, k1Sub, k1Pill)}
@@ -1519,8 +1583,11 @@ function tabImpostazioni(){
       <p class="sub">Da stampare e applicare accanto alla keybox: inquadrandolo si apre la pagina di accesso.</p>
       <form class="block" data-submit="qrMake" novalidate><label class="field"><span>Indirizzo dell’app</span><input id="qr-url" type="url" value="${esc(qrDefault)}" placeholder="https://keybox.esempio.it"><small>L’indirizzo dove l’app sarà pubblicata per il reparto.</small></label><div class="btns"><button class="btn btn-secondary btn-sm">Genera il QR</button></div></form>
       ${S.qrUrl?`<div class="qr-card"><div class="qr-t">KEYBOX STUPEFACENTI</div><div id="qr"></div><div class="qr-s">${esc(c.reparto||'')}<br>Inquadra per accedere</div></div><div class="btns"><button class="btn btn-secondary btn-sm" data-act="qrDownload">Scarica il QR (PNG)</button></div>`:''}</section>
-    <section class="panel"><h2>Dati</h2><p class="sub">${modeText()}</p>
-      ${S.resetStep?`<form class="subform" data-submit="resetConfirm" novalidate><label class="field"><span>Scrivi AZZERA per cancellare personale, movimenti e impostazioni</span><input id="rs-word" type="text" autocomplete="off"></label><p class="err" id="rs-err"></p><div class="btns"><button class="btn btn-danger btn-sm">Cancella tutti i dati</button><button type="button" class="btn btn-quiet btn-sm" data-act="resetCancel">Annulla</button></div></form>`:'<div class="btns"><button class="btn btn-secondary btn-sm" data-act="resetStart">Azzera tutti i dati</button></div>'}</section>
+    <section class="panel">
+      <div class="sec-h"><h2>Integrità e Immutabilità Dati</h2><span class="pill ok">D.M. 15/09/2026</span></div>
+      <p class="sub">${modeText()}</p>
+      <p class="fine">In conformità all'Art. 12 del D.M. 15 settembre 2026, le registrazioni cliniche e di movimentazione sono protette da trigger di immutabilità cronologica: ogni rettifica o evento avverso viene storicizzato senza cancellazione dei dati pregressi.</p>
+    </section>
   </div>`;
 }
 
@@ -1534,7 +1601,7 @@ async function run(fn){ try{ await fn(); }catch(e){ if(e&&e.session){ logout('Se
 function saveSession(){ try{ if(REMOTE_ON?S.token:S.meId) sessionStorage.setItem(SS_KEY,JSON.stringify(REMOTE_ON?{token:S.token,last:S.lastActivity}:{id:S.meId,last:S.lastActivity})); else sessionStorage.removeItem(SS_KEY); }catch(e){} }
 function logout(msg){
   Api.logout().catch(()=>{}); S.codeValue='';
-  S.meId=null; S.meUser=null; S.view='home'; S.tab='stato'; S.filter='tutti'; S.flow=null; S.codeShownUntil=0; S.confirmTake=false; S.codeFlow=null; S.coordForm=null; S.ackId=null; S.revealCode=false; S.resetStep=0; S.pinFor=null; S.showMyPinModal=false; S.recoveryFlow=null; S.assocLottoFarmacoId=null; S.newRepartoModal=false; S.repartiOverview=[];
+  S.meId=null; S.meUser=null; S.view='home'; S.tab='stato'; S.filter='tutti'; S.flow=null; S.codeShownUntil=0; S.confirmTake=false; S.codeFlow=null; S.coordForm=null; S.ackId=null; S.revealCode=false; S.resetStep=0; S.pinFor=null; S.showMyPinModal=false; S.recoveryFlow=null; S.assocLottoFarmacoId=null; S.newRepartoModal=false; S.repartiOverview=[]; S.masterAlerts=[];
   saveSession(); render(); if(msg) toast(msg);
 }
 function isWeak(code){
@@ -1562,8 +1629,7 @@ const LocalApi={
       if(mat) addEvent('accesso_negato',{matricola:mat.slice(0,12)}).catch(()=>{});
       throw new UserError('Matricola o PIN non corretti.');
     }
-    S.meId=mat;
-    S.meUser=s;
+    S.meId=mat; S.meUser=s;
   },
   async logout(){},
   async refresh(){},
@@ -1640,7 +1706,11 @@ const LocalApi={
     await Store.set('app/state',{giacenza:after,ts:evt.ts,fonte:'prelievo'});
     return evt;
   },
-  async transcribed(e){ const ts=Date.now(); await patchEvent(e,{trascritto:true,trascrittoTs:ts}); return Object.assign({},e,{trascritto:true,trascrittoTs:ts}); },
+  async transcribed(e, pagina, riga){
+    const ts=Date.now();
+    await patchEvent(e,{trascritto:true,trascrittoTs:ts,regPagina:pagina||'',regRiga:riga||''});
+    return Object.assign({},e,{trascritto:true,trascrittoTs:ts,regPagina:pagina||'',regRiga:riga||''});
+  },
   async carico(delta,rif,lotti){
     const after=stock(); Object.keys(delta).forEach(k=>after[k]=(after[k]||0)+delta[k]);
     const evt=await addEvent('carico',{delta,riferimento:rif});
@@ -1684,7 +1754,8 @@ const LocalApi={
     if(l){ l.stato = 'reso_consegnato'; l.fialeRimaste = 0; }
     await addEvent('conferma_reso_farmacia',{ lottoId, nota });
   },
-  ack(e,note){ return patchEvent(e,{gestito:{by:S.meId,byName:me().nome,ts:Date.now(),note}}); },
+  ack(e,note,inviatoMaster){ return patchEvent(e,{gestito:{by:S.meId,byName:me().nome,ts:Date.now(),note,inviatoMaster:!!inviatoMaster}}); },
+  async masterAck(id,note){},
   async codeSet(code){ await Store.merge('app/config',{codice:code,codiceDal:Date.now(),codiceDa:S.meId,codiceDaNome:me().nome}); await addEvent('codice_cambiato',{}); },
   rules(o){ return Store.merge('app/config',o); },
   farmaci(list){ return Store.merge('app/config',{farmaci:list}); },
@@ -1693,13 +1764,7 @@ const LocalApi={
   async staffPin(id,pin){ await Store.merge('staff/'+id,{pinHash:await pinHash(id,pin),deveCambiarePin:true}); },
   async staffDel(id){ const s=S.staff[id]; if(!s) return; await Store.del('staff/'+id); await addEvent('personale_rimosso',{matricola:id,nome:s.nome,ruolo:s.ruolo}); },
   appUrl(u){ return Store.merge('app/config',{appUrl:u}); },
-  async reset(){ 
-    const staff=await Store.list('staff'); const logs=await Store.list('log');
-    for(const s of staff) await Store.del('staff/'+s.id);
-    for(const l of logs) await Store.del('log/'+l.id);
-    await Store.del('app/key'); await Store.del('app/state'); await Store.del('app/config');
-    localStorage.removeItem(LS_SNOOZE_KEY); localStorage.removeItem(LS_NEGATI_KEY);
-  }
+  async reset(){ throw new UserError('Azzeramento bloccato per immutabilità normativa.'); }
 };
 
 function DEFAULTFARMACI_SAFE(){ return DEFAULT_FARMACI; }
@@ -1721,13 +1786,14 @@ async function rpc(fn,args){
   return j;
 }
 function clearRemoteData(){
-  S.events=[]; S.staff={}; S.staffLoaded=false; S.key=null; S.base=null; S.codeValue=''; S.meId=null; S.meUser=null; S.lotti=[]; S.repartiOverview=[];
+  S.events=[]; S.staff={}; S.staffLoaded=false; S.key=null; S.base=null; S.codeValue=''; S.meId=null; S.meUser=null; S.lotti=[]; S.repartiOverview=[]; S.masterAlerts=[];
   S.config=S.publicInfo||null;
 }
 function applyRemote(st){
   if(!st||!st.me) return;
   S.config=st.config; S.base=st.base; S.key=st.key; S.events=st.events||[]; S.lotti=st.lotti||[];
   S.repartiOverview=st.repartiOverview||[];
+  S.masterAlerts=st.masterAlerts||[];
   const m={}; (st.staff||[]).forEach(x=>{ m[x.id]=x; }); S.staff=m; S.staffLoaded=true; S.meId=st.me.id; S.meUser=st.me;
 }
 async function loadPublic(){
@@ -1783,7 +1849,10 @@ const RemoteApi={
     }
     return RemoteApi.act('prelievo',{qty:o.qty, paziente:o.paziente, motivo:o.motivo, note:o.note, fefo_plan:planMap}); 
   },
-  async transcribed(e){ await RemoteApi.act('transcribed',{id:e.id}); return S.events.find(x=>x.id===e.id)||Object.assign({},e,{trascritto:true,trascrittoTs:Date.now()}); },
+  async transcribed(e, pagina, riga){
+    await RemoteApi.act('transcribed',{id:e.id, pagina, riga});
+    return S.events.find(x=>x.id===e.id)||Object.assign({},e,{trascritto:true,trascrittoTs:Date.now(),regPagina:pagina,regRiga:riga});
+  },
   carico(delta,rif,lotti){ return RemoteApi.act('carico',{delta,riferimento:rif,lotti}); },
   rettifica(a,motivo){ return RemoteApi.act('rettifica',{a,motivo}); },
   verificaTurno(nota){ return RemoteApi.act('verifica_turno',{nota}); },
@@ -1805,7 +1874,8 @@ const RemoteApi={
     }
     await RemoteApi.refresh(true);
   },
-  ack(e,note){ return RemoteApi.act('ack',{id:e.id,note}); },
+  ack(e,note,inviatoMaster){ return RemoteApi.act('ack',{id:e.id,note,inviatoMaster:!!inviatoMaster}); },
+  masterAck(id,note){ return RemoteApi.act('master_ack',{id,note}); },
   codeSet(code){ return RemoteApi.act('code_set',{codice:code}); },
   rules(o){ return RemoteApi.act('rules',o); },
   farmaci(list){ return RemoteApi.act('farmaci',{farmaci:list}); },
@@ -1814,12 +1884,7 @@ const RemoteApi={
   staffPin(id,pin){ return RemoteApi.act('staff_pin',{matricola:id,pin}); },
   staffDel(id){ return RemoteApi.act('staff_delete',{matricola:id}); },
   appUrl(u){ return RemoteApi.act('app_url',{url:u}); },
-  async reset(){ 
-    await RemoteApi.act('reset'); 
-    S.token=null; S.publicInfo=null; clearRemoteData(); 
-    localStorage.removeItem(LS_SNOOZE_KEY); localStorage.removeItem(LS_NEGATI_KEY);
-    await loadPublic(); 
-  }
+  async reset(){ await RemoteApi.act('reset'); }
 };
 const Api=REMOTE_ON?RemoteApi:LocalApi;
 
@@ -1920,11 +1985,17 @@ const A={
     catch(e){ F.busy=false; if(e&&e.user){ F.step=1; F.err=e.user; render(); window.scrollTo(0,0); return; } throw e; }
     F.busy=false; F.step=3; render(); window.scrollTo(0,0);
   },
-  async markTranscribed(){ const F=S.flow; F.evt=await Api.transcribed(F.evt); render(); },
+  async markTranscribed(){
+    const F=S.flow;
+    const pag = val('tr-pag');
+    const rig = val('tr-rig');
+    F.evt=await Api.transcribed(F.evt, pag, rig);
+    render();
+  },
   async markTranscribedById(d){
     const e = S.events.find(x => x.id === d.id);
     if(e){ e.trascritto = true; e.trascrittoTs = Date.now(); }
-    await Api.transcribed({ id: d.id });
+    await Api.transcribed({ id: d.id }, '', '');
     render();
     toast('Prelievo confermato come trascritto sul registro.');
   },
@@ -1938,6 +2009,7 @@ const A={
     await Api.farmaci(list); render(); toast('Stato farmaco aggiornato.');
   },
   ackOpen(d){ S.ackId=d.id; render(); const t=$('#ack-note'); if(t) t.focus(); },
+  masterAckOpen(d){ S.ackId='master_'+d.id; render(); const t=$('#mack-note'); if(t) t.focus(); },
   ackLottoExp(d){
     S.ackId = d.id; render();
     const t = $('#ack-note');
@@ -1980,15 +2052,85 @@ const A={
     await Api.codeSet(CF.code);
     S.codeFlow={step:0}; S.revealCode=false; render(); toast('Nuovo codice attivo dalle '+hhmm(now)+'.');
   },
+  async exportVerbaleRottura(d){
+    const a = (S.masterAlerts || []).find(x => x.id === d.id);
+    if(!a) return;
+    const rows = [
+      ['VERBALE DI ROTTURA / DISCRASIA STUPEFACENTI (D.M. 15/09/2026)'],
+      ['Reparto / Unita Operativa', a.reparto],
+      ['Data e Ora Evento', ddmmyyyy(a.ts) + ' ' + hhmm(a.ts)],
+      ['Farmaco e Quantita', deltaText(a.delta)],
+      ['Lotto Coinvolto', formatLottiScalati(a.lottiScalati) || 'Non specificato'],
+      ['Operatore Segnalante', a.byName + ' (Matr. ' + a.by + ')'],
+      ['Descrizione Accaduto (Operatore)', a.note || ''],
+      ['Coordinatore Validante', (a.gestito?.byName || '') + ' (Matr. ' + (a.gestito?.by || '') + ')'],
+      ['Data e Ora Validazione Coordinatore', a.gestito?.ts ? (ddmmyyyy(a.gestito.ts) + ' ' + hhmm(a.gestito.ts)) : ''],
+      ['Relazione Coordinatore', a.gestito?.note || ''],
+      ['Estrazione Farmacia / Master', ddmmyyyy(Date.now()) + ' ' + hhmm(Date.now()) + ' da ' + (me()?.nome || '')]
+    ];
+    const csv='﻿'+rows.map(r=>r.map(c=>'"'+String(c==null?'':c).replace(/"/g,'""')+'"').join(';')).join('\r\n');
+    await saveFile('verbale-rottura-'+(a.reparto||'reparto').toLowerCase().replace(/[^a-z0-9]/g,'-')+'-'+dayKey(a.ts)+'.csv', csv);
+  },
+  async exportReportVigilanzaReparto(){
+    const I = indicators(S.period);
+    const st = stock();
+    const rows = [
+      ['REPORT PERIODICO DI VIGILANZA STUPEFACENTI (Art. 15, c. 5 - D.M. 15/09/2026)'],
+      ['Unita Operativa', cfg().reparto || ''],
+      ['Periodo Analizzato', 'Ultimi ' + S.period + ' giorni (generato il ' + ddmmyyyy(Date.now()) + ' alle ' + hhmm(Date.now()) + ')'],
+      ['Responsabile Estrazione', (me()?.nome || '') + ' (Matr. ' + (S.meId || '') + ')'],
+      [],
+      ['INDICATORE MINISTERIALE', 'VALORE RILEVATO', 'DETTAGLIO OPERATIVO'],
+      ['1. Corrispondenza delle giacenze (Target <= 48h)', I.oreDaUltimaVerifica == null ? 'Nessuna verifica' : I.oreDaUltimaVerifica + ' ore fa', I.verificheCount + ' controlli cambio turno nel periodo'],
+      ['2. Tempestivita delle registrazioni', I.prel ? Math.round(I.tras/I.prel*100) + '%' : 'N/A', I.tras + '/' + I.prel + ' trascritti; media chiave fuori ' + Math.round(I.avg) + ' min'],
+      ['3. Completezza della documentazione', I.prel ? Math.round(I.prelCompleti/I.prel*100) + '%' : 'N/A', I.prelCompleti + '/' + I.prel + ' prelievi completi di lotto, paziente e firma'],
+      ['4. Discrepanze non giustificate', String(I.discrepanzeTot), I.rettificheCount + ' rettifiche; ' + I.rotte + ' fiale rotte; ' + I.over + ' ritardi chiave'],
+      ['5. Anomalie dei consumi', (I.scostamentoPct > 0 ? '+' : '') + I.scostamentoPct + '%', 'Media ' + I.mediaPeriodo.toFixed(2) + ' fiale/giorno nel periodo'],
+      [],
+      ['STATO GIACENZE ATTUALI', 'FIALE IN CASSETTA', 'SOGLIA RIORDINO'],
+      ...farmaci().map(f => [f.nome + ' ' + f.dosaggio, String(st[f.id] || 0), String(f.soglia || 0)])
+    ];
+    const csv='﻿'+rows.map(r=>r.map(c=>'"'+String(c==null?'':c).replace(/"/g,'""')+'"').join(';')).join('\r\n');
+    await saveFile('report-vigilanza-'+(cfg().reparto||'reparto').toLowerCase().replace(/[^a-z0-9]/g,'-')+'-'+dayKey(Date.now())+'.csv', csv);
+  },
+  async exportReportVigilanzaGlobal(){
+    const reps = S.repartiOverview || [];
+    const now = Date.now();
+    const rows = [
+      ['REPORT AZIENDALE VIGILANZA STUPEFACENTI (Art. 15, c. 5 - D.M. 15/09/2026)'],
+      ['Data Estrazione', ddmmyyyy(now) + ' ' + hhmm(now)],
+      ['Estrazione a cura di', (me()?.nome || '') + ' (Master / Governance)'],
+      [],
+      ['Unita Operativa', 'Stato Chiave', 'Ore da Ultima Verifica 48h', 'Da Trascrivere', 'Resi in Attesa Farmacia', 'Dettaglio Giacenze Attuali']
+    ];
+    reps.forEach(r => {
+      const st = repStock(r);
+      const flist = (r.farmaci || DEFAULT_FARMACI).filter(f => f.attivo !== false);
+      const giacStr = flist.map(f => `${f.nome}: ${st[f.id] || 0}`).join(' | ');
+      const oreVer = r.lastVerificaTs ? String(Math.round((now - r.lastVerificaTs) / 3600000)) : 'Mai eseguita';
+      rows.push([
+        r.reparto,
+        r.keyStatus === 'out' ? 'Fuori (' + (r.keyByName || '?') + ')' : 'In Keybox',
+        oreVer,
+        String(r.daTrascrivereCount || 0),
+        String(r.lottiAccantonati || 0),
+        giacStr
+      ]);
+    });
+    const csv='﻿'+rows.map(r=>r.map(c=>'"'+String(c==null?'':c).replace(/"/g,'""')+'"').join(';')).join('\r\n');
+    await saveFile('report-vigilanza-aziendale-'+dayKey(now)+'.csv', csv);
+  },
   async exportCSV(){
     const flt=(FILTERS.find(f=>f[0]===S.filter)||FILTERS[0])[2];
-    const rows=[['Reparto','Data','Ora','Tipo','Operatore','Matricola','Dettaglio','Trascritto sul registro','Presa visione']];
+    const rows=[['Reparto','Data','Ora','Tipo','Operatore','Matricola','Dettaglio','Trascritto sul registro','Pagina/Riga Cartaceo','Presa visione Coord.','Validazione Master']];
     S.events.filter(flt).forEach(e=>{
       const op = resolveOperator(e);
+      const rifCart = (e.regPagina || e.regRiga) ? `Pag. ${e.regPagina||'-'} / Riga ${e.regRiga||'-'}` : '';
       rows.push([
         cfg().reparto||'', ddmmyyyy(e.ts), hhmm(e.ts), TYPE[e.type]||e.type, op, e.by||'',
-        detailText(e), e.type==='prelievo'?(e.trascritto?'sì':'no'):'',
-        e.gestito?(resolveOperator(e.gestito)+' '+ddmmyyyy(e.gestito.ts)+' '+(e.gestito.note||'')):''
+        detailText(e), e.type==='prelievo'?(e.trascritto?'sì':'no'):'', rifCart,
+        e.gestito?(resolveOperator(e.gestito)+' '+ddmmyyyy(e.gestito.ts)+' '+(e.gestito.note||'')):'',
+        e.masterAck?(resolveOperator(e.masterAck)+' '+ddmmyyyy(e.masterAck.ts)+' '+(e.masterAck.note||'')):''
       ]);
     });
     const csv='﻿'+rows.map(r=>r.map(c=>'"'+String(c==null?'':c).replace(/"/g,'""')+'"').join(';')).join('\r\n');
@@ -2163,6 +2305,7 @@ const SUBMIT={
   },
   async ackSaveGeneric(f){
     const alertId = f.dataset.alertId, lottoId = f.dataset.lottoId, evtId = f.dataset.evtId, note = val('ack-note');
+    const isRottura = f.dataset.isRottura === '1';
     if(alertId === 'sec_negati'){
       persistDismissNegati(Date.now());
       await addEvent('gestione_accessi_negati', { nota: `Presa visione accessi negati: ${note || 'Verificato con il personale in turno'}` });
@@ -2172,9 +2315,17 @@ const SUBMIT={
       await addEvent('gestione_scadenza', { lottoId, untilTs: forever, nota: `Presa visione scadenza lotto: ${note || 'Nessuna nota aggiuntiva'}` });
     } else if(evtId){
       const e = S.events.find(x => x.id === evtId);
-      if(e) await Api.ack(e, note);
+      if(e) await Api.ack(e, note, isRottura);
     }
-    S.ackId = null; render(); toast('Presa visione registrata.');
+    S.ackId = null; render();
+    toast(isRottura ? 'Segnalazione validata e trasmessa al Master / Farmacia!' : 'Presa visione registrata.');
+  },
+  async masterAckSave(f){
+    const id = f.dataset.id;
+    const note = val('mack-note');
+    await Api.masterAck(id, note || 'Presa in carico e archiviata dalla Farmacia / Master');
+    S.ackId = null; render();
+    toast('Segnalazione validata e archiviata.');
   },
   async codeManual(){ const c=val('cm-code'); const w=isWeak(c); if(w){ $('#cm-err').textContent=w; return; } S.codeFlow={step:1,code:c}; render(); },
   async regoleSave(){
@@ -2223,9 +2374,7 @@ const SUBMIT={
   },
   async qrMake(){ const u=val('qr-url'); if(!/^https?:\/\/\S+$/i.test(u)){ toast('Inserisci un indirizzo che inizi con https://'); return; } S.qrUrl=u; if(u!==cfg().appUrl) await Api.appUrl(u); render(); },
   async resetConfirm(){
-    if(val('rs-word').toUpperCase()!=='AZZERA'){ $('#rs-err').textContent='Scrivi AZZERA per confermare.'; return; }
-    await Api.reset();
-    S.resetStep=0; logout('Dati cancellati.');
+    toast('Azzeramento disabilitato per immutabilità normativa (D.M. 15/09/2026).');
   }
 };
 
