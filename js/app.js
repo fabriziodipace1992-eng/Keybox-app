@@ -156,7 +156,7 @@ const initialPersisted = loadPersistedState();
 const S={
   loaded:false, loadError:false, staffLoaded:false, readOnly:false,
   config:null, base:null, key:null, staff:{}, events:[], lotti:[],
-  repartiOverview:[], masterAlerts:[],
+  repartiOverview:[], masterAlerts:[], masterArchived:[], showArchivedMaster:false,
   meId:null, meUser:null, view:'home', tab:'stato', flow:null,
   newRepartoModal:false,
   codeShownUntil:0, confirmTake:false,
@@ -999,6 +999,7 @@ function viewPrelievo(){
 function viewMasterOverview(){
   const reps = S.repartiOverview || [];
   const mAlerts = S.masterAlerts || [];
+  const mArchived = S.masterArchived || [];
   const now = Date.now();
 
   const totPerFarmaco = {};
@@ -1202,6 +1203,38 @@ function viewMasterOverview(){
         </section>`;
       }).join('')}
     </div>
+
+    ${mArchived.length ? `
+      <section class="panel" style="margin-top:8px;">
+        <div class="sec-h">
+          <div>
+            <h2>Archivio Verbali Fiale Rotte / Discrasie validate</h2>
+            <p class="fine">${mArchived.length} ${mArchived.length === 1 ? 'verbale chiuso e archiviato' : 'verbali chiusi e archiviati'} dalla Governance / Farmacia.</p>
+          </div>
+          <button class="btn btn-quiet btn-sm" data-act="toggleArchivedMaster">
+            ${S.showArchivedMaster ? 'Nascondi archivio' : 'Mostra archivio (' + mArchived.length + ')'}
+          </button>
+        </div>
+        ${S.showArchivedMaster ? `
+          <div class="tbl" style="margin-top:8px;"><table>
+            <thead><tr><th>Data</th><th>Reparto</th><th>Farmaco</th><th>Operatore</th><th>Validazione Coord.</th><th>Chiusura Farmacia</th><th>Verbale</th></tr></thead>
+            <tbody>
+              ${mArchived.map(a => `
+                <tr>
+                  <td>${ddmmyyyy(a.ts)}<br><small>${hhmm(a.ts)}</small></td>
+                  <td><b>${esc(a.reparto)}</b></td>
+                  <td>${esc(deltaText(a.delta))}</td>
+                  <td>${esc(a.byName)}</td>
+                  <td>${esc(a.gestito?.byName || '—')}<br><small>${esc(a.gestito?.note || '')}</small></td>
+                  <td>${esc(a.masterAck?.byName || '—')}<br><small>${esc(a.masterAck?.note || '')}</small></td>
+                  <td><button class="btn btn-secondary btn-sm" data-act="exportVerbaleRottura" data-id="${esc(a.id)}" data-src="archived">Scarica CSV</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table></div>
+        ` : ''}
+      </section>
+    ` : ''}
   </div>`;
 }
 
@@ -1601,7 +1634,7 @@ async function run(fn){ try{ await fn(); }catch(e){ if(e&&e.session){ logout('Se
 function saveSession(){ try{ if(REMOTE_ON?S.token:S.meId) sessionStorage.setItem(SS_KEY,JSON.stringify(REMOTE_ON?{token:S.token,last:S.lastActivity}:{id:S.meId,last:S.lastActivity})); else sessionStorage.removeItem(SS_KEY); }catch(e){} }
 function logout(msg){
   Api.logout().catch(()=>{}); S.codeValue='';
-  S.meId=null; S.meUser=null; S.view='home'; S.tab='stato'; S.filter='tutti'; S.flow=null; S.codeShownUntil=0; S.confirmTake=false; S.codeFlow=null; S.coordForm=null; S.ackId=null; S.revealCode=false; S.resetStep=0; S.pinFor=null; S.showMyPinModal=false; S.recoveryFlow=null; S.assocLottoFarmacoId=null; S.newRepartoModal=false; S.repartiOverview=[]; S.masterAlerts=[];
+  S.meId=null; S.meUser=null; S.view='home'; S.tab='stato'; S.filter='tutti'; S.flow=null; S.codeShownUntil=0; S.confirmTake=false; S.codeFlow=null; S.coordForm=null; S.ackId=null; S.revealCode=false; S.resetStep=0; S.pinFor=null; S.showMyPinModal=false; S.recoveryFlow=null; S.assocLottoFarmacoId=null; S.newRepartoModal=false; S.repartiOverview=[]; S.masterAlerts=[]; S.masterArchived=[];
   saveSession(); render(); if(msg) toast(msg);
 }
 function isWeak(code){
@@ -1786,7 +1819,7 @@ async function rpc(fn,args){
   return j;
 }
 function clearRemoteData(){
-  S.events=[]; S.staff={}; S.staffLoaded=false; S.key=null; S.base=null; S.codeValue=''; S.meId=null; S.meUser=null; S.lotti=[]; S.repartiOverview=[]; S.masterAlerts=[];
+  S.events=[]; S.staff={}; S.staffLoaded=false; S.key=null; S.base=null; S.codeValue=''; S.meId=null; S.meUser=null; S.lotti=[]; S.repartiOverview=[]; S.masterAlerts=[]; S.masterArchived=[];
   S.config=S.publicInfo||null;
 }
 function applyRemote(st){
@@ -1794,6 +1827,7 @@ function applyRemote(st){
   S.config=st.config; S.base=st.base; S.key=st.key; S.events=st.events||[]; S.lotti=st.lotti||[];
   S.repartiOverview=st.repartiOverview||[];
   S.masterAlerts=st.masterAlerts||[];
+  S.masterArchived=st.masterArchived||[];
   const m={}; (st.staff||[]).forEach(x=>{ m[x.id]=x; }); S.staff=m; S.staffLoaded=true; S.meId=st.me.id; S.meUser=st.me;
 }
 async function loadPublic(){
@@ -1890,6 +1924,7 @@ const Api=REMOTE_ON?RemoteApi:LocalApi;
 
 const A={
   goMasterHome(){ S.view='coord'; S.tab='master'; S.flow=null; render(); window.scrollTo(0,0); },
+  toggleArchivedMaster(){ S.showArchivedMaster = !S.showArchivedMaster; render(); },
   goView(d){
     S.view=d.v; S.flow=null; S.confirmTake=false;
     if(d.v==='coord' && S.tab==='master') S.tab='stato';
@@ -2053,7 +2088,8 @@ const A={
     S.codeFlow={step:0}; S.revealCode=false; render(); toast('Nuovo codice attivo dalle '+hhmm(now)+'.');
   },
   async exportVerbaleRottura(d){
-    const a = (S.masterAlerts || []).find(x => x.id === d.id);
+    const list = d.src === 'archived' ? (S.masterArchived || []) : (S.masterAlerts || []);
+    const a = list.find(x => x.id === d.id);
     if(!a) return;
     const rows = [
       ['VERBALE DI ROTTURA / DISCRASIA STUPEFACENTI (D.M. 15/09/2026)'],
@@ -2066,6 +2102,7 @@ const A={
       ['Coordinatore Validante', (a.gestito?.byName || '') + ' (Matr. ' + (a.gestito?.by || '') + ')'],
       ['Data e Ora Validazione Coordinatore', a.gestito?.ts ? (ddmmyyyy(a.gestito.ts) + ' ' + hhmm(a.gestito.ts)) : ''],
       ['Relazione Coordinatore', a.gestito?.note || ''],
+      ['Chiusura Farmacia / Master', a.masterAck ? ((a.masterAck.byName || '') + ' il ' + ddmmyyyy(a.masterAck.ts) + ' - ' + (a.masterAck.note || '')) : 'In attesa di validazione'],
       ['Estrazione Farmacia / Master', ddmmyyyy(Date.now()) + ' ' + hhmm(Date.now()) + ' da ' + (me()?.nome || '')]
     ];
     const csv='﻿'+rows.map(r=>r.map(c=>'"'+String(c==null?'':c).replace(/"/g,'""')+'"').join(';')).join('\r\n');
