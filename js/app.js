@@ -559,19 +559,30 @@ function modeText(){
 function viewTop(){
   const m=me(); const c=cfg(); const n=isCoord()?alerts().length:0;
   const masterBadge = isMaster() ? `<span class="pill ok" style="margin-left:6px;">MASTER</span>` : '';
+  const reps = S.repartiOverview || [];
+
   return `<header class="top"><div class="top-in">
-    <div class="brand"><span class="brand-mark">${IC.box}</span><div><div class="brand-name">Keybox stupefacenti ${masterBadge}</div><div class="brand-sub">${esc(c.reparto||'')}</div></div></div>
+    <div class="brand"><span class="brand-mark">${IC.box}</span><div><div class="brand-name">Keybox stupefacenti ${masterBadge}</div><div class="brand-sub">${isMaster() && S.tab==='master' ? 'Governance Aziendale · Tutti i reparti' : esc(c.reparto||'')}</div></div></div>
     <div class="who">
       <div class="who-name">${esc(m.nome)}</div>
       <div class="who-role">${m.ruolo==='master'?'Governance Aziendale / Farmacia':(m.ruolo==='coordinatore'?'Coordinatore':'Infermiere')} · <button class="btn-link" data-act="openMyPin" title="Cambia il tuo PIN">Modifica PIN</button></div>
     </div>
     <button class="btn btn-quiet btn-sm" data-act="logout">Esci</button>
   </div>
-  ${isCoord()?`<nav class="switch" aria-label="Sezione">
-    ${isMaster()?`<button data-act="goMasterHome" aria-pressed="${S.view==='coord'&&S.tab==='master'}">Panoramica Reparti (${(S.repartiOverview||[]).length})</button>`:''}
-    <button data-act="goView" data-v="home" aria-pressed="${S.view!=='coord'}">Reparto: ${esc(c.reparto||'')}</button>
-    <button data-act="goView" data-v="coord" aria-pressed="${S.view==='coord'&&S.tab!=='master'}"><span class="hide-sm">Gestione ${esc(c.reparto||'')}</span><span class="show-sm">Gestione</span>${n?` <span class="count">${n}</span>`:''}</button>
-  </nav>`:''}
+  ${isMaster() ? `
+    <nav class="switch" aria-label="Reparti" style="flex-wrap:wrap;">
+      <button data-act="goMasterHome" aria-pressed="${S.view==='coord'&&S.tab==='master'}">Cruscotto Aziendale (${reps.length})</button>
+      ${reps.map(r => {
+        const isSelected = !(S.view==='coord'&&S.tab==='master') && Number(r.id) === Number(c.id);
+        return `<button data-act="switchReparto" data-id="${r.id}" aria-pressed="${isSelected}">${esc(r.reparto)}</button>`;
+      }).join('')}
+    </nav>
+  ` : (isCoord() ? `
+    <nav class="switch" aria-label="Sezione">
+      <button data-act="goView" data-v="home" aria-pressed="${S.view!=='coord'}">Reparto</button>
+      <button data-act="goView" data-v="coord" aria-pressed="${S.view==='coord'}"><span class="hide-sm">Pannello coordinatore</span><span class="show-sm">Coordinatore</span>${n?` <span class="count">${n}</span>`:''}</button>
+    </nav>
+  ` : '')}
   </header>`;
 }
 
@@ -969,21 +980,119 @@ function viewPrelievo(){
 
 function viewMasterOverview(){
   const reps = S.repartiOverview || [];
-  const activeRepId = cfg().id;
   const now = Date.now();
+
+  // Calcolo aggregato aziendale di tutte le fiale, scadenze e indicatori
+  const totPerFarmaco = {};
+  let totFialeAzienda = 0;
+  let totLottiScaduti = 0;
+  let totLottiInScadenza = 0;
+  let totResiAttesa = 0;
+  let totDaTrascrivere = 0;
+  let repVerificati48h = 0;
+  const scadenzeCritiche = [];
+
+  reps.forEach(r => {
+    const st = repStock(r);
+    const flist = (r.farmaci || DEFAULT_FARMACI).filter(f => f.attivo !== false);
+    flist.forEach(f => {
+      const q = st[f.id] || 0;
+      const key = f.nome;
+      totPerFarmaco[key] = (totPerFarmaco[key] || 0) + q;
+      totFialeAzienda += q;
+    });
+
+    totResiAttesa += Number(r.lottiAccantonati || 0);
+    totDaTrascrivere += Number(r.daTrascrivereCount || 0);
+
+    const oreVer = r.lastVerificaTs ? Math.round((now - r.lastVerificaTs) / 3600000) : null;
+    if(oreVer != null && oreVer <= 48) repVerificati48h++;
+
+    (r.lottiAttivi || []).forEach(l => {
+      const expTs = parseScadenza(l.scadenza);
+      if(expTs){
+        const diffDays = Math.ceil((expTs - now) / 86400000);
+        const fObj = (r.farmaci || DEFAULT_FARMACI).find(x => x.id === l.farmacoId) || { nome: l.farmacoId };
+        if(diffDays <= 0){
+          totLottiScaduti++;
+          scadenzeCritiche.push({ repId: r.id, reparto: r.reparto, farmaco: fObj.nome, lotto: l.lotto, scadenza: l.scadenza, fiale: l.fialeRimaste, days: diffDays });
+        } else if(diffDays <= 30){
+          totLottiInScadenza++;
+          scadenzeCritiche.push({ repId: r.id, reparto: r.reparto, farmaco: fObj.nome, lotto: l.lotto, scadenza: l.scadenza, fiale: l.fialeRimaste, days: diffDays });
+        }
+      }
+    });
+  });
+
+  scadenzeCritiche.sort((a,b) => a.days - b.days);
 
   return `<div class="block">
     <div class="sec-h">
       <div>
-        <h2>Cruscotto Aziendale · Unità Operative Attive</h2>
-        <p class="fine">Supervisione centralizzata di giacenze, stato chiave, controlli 48h (D.M. 15/09/2026) e resi alla farmacia.</p>
+        <h2>Cruscotto Aziendale · Farmacia e Governance</h2>
+        <p class="fine">Visione d’insieme delle giacenze, scadenze lotti e indicatori D.M. 15/09/2026 su ${reps.length} Unità Operative.</p>
       </div>
       <button class="btn btn-primary" data-act="openNewReparto">+ Attiva nuovo reparto</button>
     </div>
 
+    <div class="kpis">
+      ${kpi(
+        'Giacenza totale aziendale',
+        totFialeAzienda + '<small> fiale</small>',
+        Object.keys(totPerFarmaco).map(k => `${k}: ${totPerFarmaco[k]}`).join(' · ') || 'Nessun farmaco',
+        `<span class="pill ok">${reps.length} reparti attivi</span>`
+      )}
+      ${kpi(
+        'Scadenze e Lotti critici',
+        String(totLottiScaduti + totLottiInScadenza),
+        `${totLottiScaduti} scaduti · ${totLottiInScadenza} entro 30 gg`,
+        totLottiScaduti > 0 ? '<span class="pill crit">Intervento immediato</span>' : (totLottiInScadenza > 0 ? '<span class="pill warn">Monitorare FEFO</span>' : '<span class="pill ok">Nessuna criticità</span>')
+      )}
+      ${kpi(
+        'Controllo giacenze (48h)',
+        `${repVerificati48h}/${reps.length}`,
+        'Reparti con verifica turno entro 48h',
+        repVerificati48h === reps.length ? '<span class="pill ok">100% conformi</span>' : '<span class="pill warn">Verifiche in scadenza</span>'
+      )}
+      ${kpi(
+        'Registrazioni e Resi',
+        String(totDaTrascrivere + totResiAttesa),
+        `${totDaTrascrivere} da trascrivere · ${totResiAttesa} resi farmacia`,
+        (totDaTrascrivere + totResiAttesa) === 0 ? '<span class="pill ok">Tutto allineato</span>' : '<span class="pill warn">Azioni pendenti</span>'
+      )}
+    </div>
+
+    ${scadenzeCritiche.length ? `
+      <section class="panel" style="border-left: 4px solid ${totLottiScaduti > 0 ? '#DC2626' : '#D97706'};">
+        <div class="sec-h">
+          <h2>Scadenziario Lotti Aziendale (Scaduti o entro 30 giorni)</h2>
+          <span class="pill ${totLottiScaduti > 0 ? 'crit' : 'warn'}">${scadenzeCritiche.length} lotti</span>
+        </div>
+        <div class="tbl"><table>
+          <thead><tr><th>Reparto</th><th>Farmaco</th><th>Lotto</th><th>Scadenza</th><th class="num">Fiale</th><th>Azione</th></tr></thead>
+          <tbody>
+            ${scadenzeCritiche.map(s => `
+              <tr>
+                <td><b>${esc(s.reparto)}</b></td>
+                <td>${esc(s.farmaco)}</td>
+                <td><span class="mono">${esc(s.lotto)}</span></td>
+                <td>${esc(s.scadenza)} <span class="pill ${s.days <= 0 ? 'crit' : 'warn'}" style="margin-left:4px;">${s.days <= 0 ? 'Scaduto' : `${s.days} gg`}</span></td>
+                <td class="num"><b>${s.fiale}</b></td>
+                <td><button class="btn btn-secondary btn-sm" data-act="switchReparto" data-id="${s.repId}">Apri reparto →</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table></div>
+      </section>
+    ` : ''}
+
+    <div class="sec-h" style="margin-top:8px;">
+      <h2>Dettaglio per Unità Operativa</h2>
+      <span class="fine">Seleziona un reparto per aprire la gestione completa da Coordinatore</span>
+    </div>
+
     <div class="grid2">
       ${reps.map(r => {
-        const isCurrent = Number(r.id) === Number(activeRepId);
         const st = repStock(r);
         const flist = (r.farmaci || DEFAULT_FARMACI).filter(f => f.attivo !== false);
         const keyOut = r.keyStatus === 'out';
@@ -992,10 +1101,10 @@ function viewMasterOverview(){
         const oreVerifica = r.lastVerificaTs ? Math.round((now - r.lastVerificaTs) / 3600000) : null;
         const verificaOk = oreVerifica != null && oreVerifica <= 48;
 
-        return `<section class="panel" style="border-left: 5px solid ${isCurrent ? 'var(--accent,#0D6A62)' : '#CBD5E1'};">
+        return `<section class="panel" style="cursor:pointer;" data-act="switchReparto" data-id="${r.id}">
           <div class="sec-h">
             <div>
-              <h3 style="margin:0;font-size:18px;">${esc(r.reparto)} ${isCurrent ? '<span class="pill ok" style="margin-left:6px;">In ispezione</span>' : ''}</h3>
+              <h3 style="margin:0;font-size:18px;">${esc(r.reparto)}</h3>
               <div class="row-s">${r.staffCount || 0} operatori attivi</div>
             </div>
             <span class="pill ${keyLate ? 'crit' : (keyOut ? 'warn' : 'ok')}">
@@ -1003,27 +1112,30 @@ function viewMasterOverview(){
             </span>
           </div>
 
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-block:10px;">
-            ${flist.map(f => {
-              const q = st[f.id] || 0;
-              const low = q <= (f.soglia || 0);
-              return `<div style="background:var(--bg-soft,#F8FAFC);padding:8px 10px;border-radius:8px;border:1px solid #E2E8F0;">
-                <div style="font-size:12px;font-weight:700;color:#475569;">${esc(f.nome)}</div>
-                <div style="font-size:20px;font-weight:800;color:${low?'#DC2626':'#0F172A'};">${q} <small style="font-size:12px;font-weight:500;">fiale</small></div>
-              </div>`;
-            }).join('')}
+          <div class="subform" style="margin-block:8px;padding:10px;">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;width:100%;">
+              ${flist.map(f => {
+                const q = st[f.id] || 0;
+                const low = q <= (f.soglia || 0);
+                return `<div>
+                  <div class="row-s" style="font-weight:700;">${esc(f.nome)}</div>
+                  <div style="font-size:20px;font-weight:800;color:${low?'#EF4444':'inherit'};">${q} <small style="font-size:12px;font-weight:500;">fiale</small></div>
+                </div>`;
+              }).join('')}
+            </div>
           </div>
 
-          <div class="row-meta" style="margin-bottom:12px;">
+          <div class="row-meta" style="margin-bottom:10px;">
             <span class="pill ${verificaOk ? 'ok' : 'warn'}">
               ${oreVerifica == null ? 'Verifica 48h: Mai eseguita' : `Verifica turno: ${oreVerifica}h fa`}
             </span>
-            ${r.lottiAccantonati > 0 ? `<span class="pill warn">📦 ${r.lottiAccantonati} lotti da ritirare (reso)</span>` : ''}
+            ${r.daTrascrivereCount > 0 ? `<span class="pill warn">${r.daTrascrivereCount} da trascrivere</span>` : ''}
+            ${r.lottiAccantonati > 0 ? `<span class="pill warn">📦 ${r.lottiAccantonati} resi farmacia</span>` : ''}
           </div>
 
           <div class="btns">
-            <button class="btn ${isCurrent ? 'btn-secondary' : 'btn-primary'} btn-sm btn-block" data-act="switchReparto" data-id="${r.id}">
-              ${isCurrent ? 'Apri gestione completa di questo reparto →' : 'Ispeziona questo reparto →'}
+            <button class="btn btn-secondary btn-sm btn-block" data-act="switchReparto" data-id="${r.id}">
+              Apri gestione reparto →
             </button>
           </div>
         </section>`;
@@ -1045,7 +1157,17 @@ function viewCoord(){
   else if(S.tab==='indicatori') body=tabIndicatori();
   else if(S.tab==='impostazioni') body=tabImpostazioni();
   else body=tabStato();
-  return `<div class="tabs" role="tablist">${tabs.map(([id,l])=>`<button class="tab" role="tab" aria-selected="${S.tab===id}" data-act="setTab" data-t="${id}">${l}${id==='segnalazioni'&&n?` <span class="count">${n}</span>`:''}</button>`).join('')}</div>${body}`;
+  return `
+    ${isMaster() ? `
+      <div class="sec-h" style="margin-bottom:10px;">
+        <div>
+          <span class="eyebrow">Ispezione Unità Operativa</span>
+          <h2 style="margin:0;">${esc(cfg().reparto||'')}</h2>
+        </div>
+        <button class="btn btn-quiet btn-sm" data-act="goMasterHome">← Torna al Cruscotto Aziendale</button>
+      </div>
+    ` : ''}
+    <div class="tabs" role="tablist">${tabs.map(([id,l])=>`<button class="tab" role="tab" aria-selected="${S.tab===id}" data-act="setTab" data-t="${id}">${l}${id==='segnalazioni'&&n?` <span class="count">${n}</span>`:''}</button>`).join('')}</div>${body}`;
 }
 
 function formCarico(){
@@ -1723,7 +1845,8 @@ const A={
     S.view='coord';
     S.tab='stato';
     render();
-    toast('Reparto attivo: '+(cfg().reparto||''));
+    window.scrollTo(0,0);
+    toast('Gestione reparto: '+(cfg().reparto||''));
   },
   startRecovery(){ S.recoveryFlow={step:1,mat:val('l-mat'),emailMasked:'',err:''}; render(); },
   cancelRecovery(){ S.recoveryFlow=null; render(); },
